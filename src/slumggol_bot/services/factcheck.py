@@ -26,6 +26,7 @@ from slumggol_bot.services.style_profiles import StyleProfileService
 
 logger = logging.getLogger(__name__)
 _FACTCHECK_OUTPUT_TOKEN_BUDGETS = (1200, 2200)
+_FOLLOWUP_MAX_OUTPUT_TOKENS = 900
 
 
 class ClaimCacheProtocol(Protocol):
@@ -210,6 +211,75 @@ class OpenAIFactCheckClient:
         )
         result.claim_key = compute_text_hash(result.canonical_claim_en)
         return result
+
+    async def answer_followup(
+        self,
+        *,
+        message: NormalizedMessage,
+        style_profile: GroupStyleProfile,
+        registry: SourceRegistry,
+        style_profile_service: StyleProfileService,
+    ) -> str:
+        question = message.primary_text.strip()
+        if not question:
+            raise ValueError("Follow-up question text is required.")
+
+        prior_reply = message.quoted_text.strip()
+        if not prior_reply:
+            raise ValueError("Missing prior bot reply context.")
+
+        user_text = "\n".join(
+            [
+                f"Prior bot evaluation:\n{prior_reply}",
+                f"User follow-up question:\n{question}",
+                registry.prompt_hint(),
+                style_profile_service.prompt_guidance(style_profile),
+                (
+                    "Answer only the follow-up question based on the prior evaluation and "
+                    "fresh checks when needed. Keep the answer concise and practical."
+                ),
+            ]
+        )
+        responses_api: Any = self.client.responses
+        logger.info(
+            (
+                "Calling OpenAI followup group_id=%s message_id=%s model=%s "
+                "max_output_tokens=%s"
+            ),
+            message.group_id,
+            message.message_id,
+            self.settings.openai_model,
+            _FOLLOWUP_MAX_OUTPUT_TOKENS,
+        )
+        response = await responses_api.create(
+            model=self.settings.openai_model,
+            reasoning={"effort": "low"},
+            text={"verbosity": "low"},
+            max_output_tokens=_FOLLOWUP_MAX_OUTPUT_TOKENS,
+            store=False,
+            tools=[{"type": "web_search_preview"}],
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "You are a factual follow-up assistant for a Telegram "
+                                "fact-check bot. Answer follow-up questions with clear, "
+                                "neutral language. If the question cannot be answered "
+                                "confidently, say so."
+                            ),
+                        }
+                    ],
+                },
+                {"role": "user", "content": [{"type": "input_text", "text": user_text}]},
+            ],
+        )
+        answer = _extract_output_text(response).strip()
+        if not answer:
+            raise ValueError("OpenAI follow-up response did not include output text.")
+        return answer
 
 
 def _factcheck_output_format() -> dict[str, Any]:
@@ -428,6 +498,19 @@ class FactCheckService:
                 expires_at=datetime.now(UTC) + ttl,
             )
         return result
+
+    async def answer_followup(
+        self,
+        *,
+        message: NormalizedMessage,
+        style_profile: GroupStyleProfile,
+    ) -> str:
+        return await self.client.answer_followup(
+            message=message,
+            style_profile=style_profile,
+            registry=self.registry,
+            style_profile_service=self.style_profile_service,
+        )
 
     async def _cached_result_for_message(
         self,

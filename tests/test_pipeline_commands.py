@@ -101,6 +101,7 @@ class FakeCandidateGate:
 class FakeFactCheckService:
     def __init__(self) -> None:
         self.messages: list[NormalizedMessage] = []
+        self.followup_messages: list[NormalizedMessage] = []
 
     async def assess_candidate(
         self,
@@ -123,6 +124,15 @@ class FakeFactCheckService:
             usage=ModelUsage(),
             claim_key="claim-key-1",
         )
+
+    async def answer_followup(
+        self,
+        *,
+        message: NormalizedMessage,
+        style_profile: GroupStyleProfile,  # noqa: ARG002
+    ) -> str:
+        self.followup_messages.append(message)
+        return "Here are the additional reasons and evidence."
 
 
 class FakeStyleProfileService:
@@ -162,6 +172,7 @@ async def test_factcheck_command_bypasses_gate_and_replies() -> None:
         occurred_at=datetime.now(UTC),
         group_id="-100123",
         message_id="-100123:22",
+        transport_message_id=22,
         sender_id="42",
         content_kind=ContentKind.TEXT,
         command_name="factcheck",
@@ -180,7 +191,46 @@ async def test_factcheck_command_bypasses_gate_and_replies() -> None:
     assert transport.sent_messages
     assert "Verdict: false (95% confidence)" in transport.sent_messages[0][1]
     assert "This is not correct." in transport.sent_messages[0][1]
-    assert transport.sent_messages[0][2] is None
+    assert transport.sent_messages[0][2] == 22
+
+
+@pytest.mark.asyncio
+async def test_followup_reply_to_bot_bypasses_gate_and_threads_reply() -> None:
+    transport = FakeTransport()
+    factcheck_service = FakeFactCheckService()
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=factcheck_service,
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:120",
+        transport_message_id=120,
+        sender_id="314",
+        content_kind=ContentKind.TEXT,
+        command_name="followup",
+        text="What about these other reasons?",
+        quoted_text="Verdict: false (95% confidence)",
+    )
+
+    result = await orchestrator.process_message(message)
+
+    assert result is None
+    assert len(factcheck_service.followup_messages) == 1
+    assert factcheck_service.followup_messages[0].text == "What about these other reasons?"
+    assert transport.sent_messages
+    assert transport.sent_messages[0][1] == "Here are the additional reasons and evidence."
+    assert transport.sent_messages[0][2] == 120
 
 
 @pytest.mark.asyncio

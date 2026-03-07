@@ -134,6 +134,28 @@ class PipelineOrchestrator:
             await self.session.commit()
             return None
 
+        if message.command_name == "followup":
+            followup_question = message.primary_text.strip()
+            if not followup_question:
+                await self.transport.send_group_message(
+                    message.group_id,
+                    "Reply to the bot with a follow-up question in text.",
+                    reply_to_message_id=message.transport_message_id,
+                )
+                await self.session.commit()
+                return None
+            followup_answer = await self.factcheck_service.answer_followup(
+                message=message,
+                style_profile=updated_profile,
+            )
+            await self.transport.send_group_message(
+                message.group_id,
+                followup_answer,
+                reply_to_message_id=message.transport_message_id,
+            )
+            await self.session.commit()
+            return None
+
         assessment_message = message_for_assessment(message)
         if assessment_message is None:
             logger.info(
@@ -174,7 +196,11 @@ class PipelineOrchestrator:
                 result.verdict.value,
                 result.confidence,
             )
-            await self.transport.send_group_message(message.group_id, reply_text)
+            await self.transport.send_group_message(
+                message.group_id,
+                reply_text,
+                reply_to_message_id=message.transport_message_id,
+            )
             await self.analytics_sink.write([reply_event(message, result)])
         elif should_reply(result):
             logger.info(
@@ -221,6 +247,19 @@ class PipelineOrchestrator:
                     message.group_id,
                     message.message_id,
                 )
+        elif message.command_name == "followup":
+            try:
+                await self.transport.send_group_message(
+                    message.group_id,
+                    "Follow-up answer is temporarily unavailable. Please try again.",
+                    reply_to_message_id=message.transport_message_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to send follow-up error reply group_id=%s message_id=%s",
+                    message.group_id,
+                    message.message_id,
+                )
 
 
 def should_reply(result: FactCheckResult) -> bool:
@@ -233,9 +272,12 @@ def should_reply(result: FactCheckResult) -> bool:
 
 
 def explicit_command_decision(message: NormalizedMessage) -> CandidateDecision | None:
-    if message.command_name != "factcheck":
+    if message.command_name not in {"factcheck", "followup"}:
         return None
-    return CandidateDecision(candidate=True, reason_codes=["command_factcheck"])
+    reason_code = (
+        "command_factcheck" if message.command_name == "factcheck" else "command_followup"
+    )
+    return CandidateDecision(candidate=True, reason_codes=[reason_code])
 
 
 def message_for_assessment(message: NormalizedMessage) -> NormalizedMessage | None:

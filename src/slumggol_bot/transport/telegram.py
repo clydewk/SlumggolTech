@@ -151,6 +151,13 @@ class TelegramTransport:
         ):
             command_name = "factcheck"
             command_arg_text = ""
+        if (
+            command_name is None
+            and await self._is_reply_followup_trigger(
+                reply_payload=message.get("reply_to_message"),
+            )
+        ):
+            command_name = "followup"
         normalized_text = command_arg_text if command_name == "factcheck" else text
 
         content_kind = ContentKind.TEXT
@@ -340,6 +347,26 @@ class TelegramTransport:
         if self._bot_username is None:
             logger.warning("Telegram getMe response did not include bot username")
         return self._bot_username
+
+    async def _is_reply_followup_trigger(
+        self,
+        *,
+        reply_payload: Any,
+    ) -> bool:
+        if not isinstance(reply_payload, dict):
+            return False
+        sender_payload = reply_payload.get("from")
+        if not isinstance(sender_payload, dict):
+            return False
+        if not bool(sender_payload.get("is_bot")):
+            return False
+        replied_username = _normalize_username(sender_payload.get("username"))
+        if replied_username is None:
+            return False
+        bot_username = await self._resolve_bot_username()
+        if bot_username is None:
+            return False
+        return replied_username == bot_username
 
     def _parse_message_id(self, value: Any) -> int | None:
         if isinstance(value, int):
