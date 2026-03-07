@@ -10,6 +10,7 @@ dependencies = [
   "asyncpg>=0.30.0",
   "clickhouse-connect>=0.8.15",
   "fastapi>=0.115.6",
+  "greenlet>=3.1.1",
   "httpx>=0.28.1",
   "imagehash>=4.3.1",
   "openai>=1.65.0",
