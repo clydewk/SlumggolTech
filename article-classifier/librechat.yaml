@@ -1,0 +1,32 @@
+version: 1.3.5
+cache: true
+
+mcpSettings:
+  allowedDomains:
+    - "mcp-classifier"
+
+mcpServers:
+  article-classifier:
+    type: streamable-http
+    url: http://mcp-classifier:8001/mcp/
+    timeout: 30000
+    initTimeout: 10000
+
+interface:
+  endpointsMenu: false
+  modelSelect: false
+  parameters: false
+  sidePanel: false
+  presets: false
+
+modelSpecs:
+  enforce: true
+  prioritize: true
+  list:
+    - name: "Article Classifier"
+      label: "Article Classifier"
+      description: "Paste a news article URL to classify it as trustworthy or malicious"
+      preset:
+        default: true
+        endpoint: "agents"
+        agent_id: "agent_MFtDFWRW_qD5Kugkwb86P"
