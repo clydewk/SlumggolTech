@@ -16,7 +16,14 @@ Telegram fact-check bot scaffold built around:
 3. Start the local stack with Docker, including the Telegram poller:
 
 ```bash
-docker compose --profile polling up --build
+docker compose --profile polling up --build --remove-orphans
+```
+
+If you previously ran tunnel/webhook mode, stop those services first:
+
+```bash
+docker compose stop cloudflared webhook-sync
+docker compose rm -f cloudflared webhook-sync
 ```
 
 4. Create a Telegram bot with BotFather, disable bot privacy for groups with `/setprivacy`, and add the bot to the target Telegram group or supergroup.
@@ -80,8 +87,10 @@ docker compose --profile tunnel up --build -d --remove-orphans
 - Raw inbound text, image bytes, audio bytes, and transcripts are processed in memory and not persisted.
 - ClickHouse schemas and materialized views live in `sql/clickhouse_bot_analytics.sql`.
 - Polling is the default local-development ingress path because it does not need a public HTTPS endpoint.
+- Polling mode and tunnel/webhook mode are mutually exclusive; stop `cloudflared` and `webhook-sync` before polling to prevent webhook re-registration and Telegram `409 Conflict` on `getUpdates`.
 - The poller disables any existing Telegram webhook on startup before calling `getUpdates`.
 - Webhook mode still requires a public HTTPS endpoint; local-only `localhost` webhooks will not work.
+- Manual fact-checking supports both `/factcheck <claim>` and replying to a message with `@<bot_username>` to trigger a check of the replied message.
 - The optional `cloudflared` Compose profile is only there to expose `api:8000` to Telegram during local development when `TELEGRAM_INGEST_MODE=webhook`.
 - The optional `webhook-sync` Compose service watches the Cloudflare quick-tunnel URL and re-registers the Telegram webhook automatically after tunnel restarts.
 - `./scripts/set_telegram_webhook.sh` registers the bot against `${PUBLIC_WEBHOOK_URL}/webhooks/telegram`.
