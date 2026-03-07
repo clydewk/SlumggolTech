@@ -33,6 +33,7 @@ class ClaimCacheEntry(Base):
     __tablename__ = "claim_cache_entries"
 
     claim_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    canonical_text_simhash: Mapped[str | None] = mapped_column(String(16))
     verdict: Mapped[str] = mapped_column(String(32))
     confidence: Mapped[float] = mapped_column(Float)
     reply_language: Mapped[str] = mapped_column(String(32))
@@ -58,6 +59,7 @@ class HotClaimEntry(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     hash_key: Mapped[str] = mapped_column(String(128), index=True)
     claim_key: Mapped[str | None] = mapped_column(String(128))
+    text_simhash: Mapped[str | None] = mapped_column(String(16))
     reason: Mapped[str] = mapped_column(String(64))
     score: Mapped[float] = mapped_column(Float)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

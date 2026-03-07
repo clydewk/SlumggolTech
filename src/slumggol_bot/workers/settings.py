@@ -5,7 +5,12 @@ from typing import Any
 from arq.connections import RedisSettings
 from arq.worker import run_worker as arq_run_worker
 
-from slumggol_bot.api.app import app, get_session_factory, get_settings
+from slumggol_bot.api.app import (
+    GrouplessClaimCacheRepository,
+    app,
+    get_session_factory,
+    get_settings,
+)
 from slumggol_bot.db.repositories import HotClaimRepository
 from slumggol_bot.services.cache import RedisHotClaimStore
 from slumggol_bot.services.outbreak import OutbreakService
@@ -17,8 +22,12 @@ async def refresh_outbreaks_job(ctx: dict) -> int:  # noqa: ARG001
     async with session_factory() as session:
         service = OutbreakService(
             query_service=app.state.analytics_query_service,
-            hot_claim_store=RedisHotClaimStore(app.state.redis),
+            hot_claim_store=RedisHotClaimStore(
+                app.state.redis,
+                max_distance=settings.text_simhash_max_distance,
+            ),
             hot_claim_repository=HotClaimRepository(session),
+            claim_cache_repository=GrouplessClaimCacheRepository(session),
             lookback_minutes=settings.hot_claim_lookback_minutes,
             min_group_count=settings.hot_claim_min_groups,
         )

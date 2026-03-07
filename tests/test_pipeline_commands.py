@@ -74,11 +74,19 @@ class FakeHashObservationStore:
         return []
 
 
+class FakeTextSimHashObservationStore:
+    async def record(self, text_simhash: str | None, group_id: str):  # noqa: ANN001, ARG002
+        return None
+
+
 class FakeHotClaimStore:
     async def contains_hash(self, hash_key: str) -> bool:  # noqa: ARG002
         return False
 
     async def claim_key_for_hash(self, hash_key: str) -> str | None:  # noqa: ARG002
+        return None
+
+    async def simhash_match(self, text_simhash: str | None, max_distance: int):  # noqa: ANN001, ARG002
         return None
 
     async def replace(self, claims, ttl_seconds: int) -> None:  # noqa: ANN001, ARG002
@@ -142,6 +150,7 @@ async def test_factcheck_command_bypasses_gate_and_replies() -> None:
         transport=transport,
         analytics_sink=FakeAnalyticsSink(),
         hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
         hot_claim_store=FakeHotClaimStore(),
         candidate_gate=FakeCandidateGate(),
         factcheck_service=factcheck_service,
@@ -186,6 +195,7 @@ async def test_auto_reply_quotes_original_message() -> None:
         transport=transport,
         analytics_sink=FakeAnalyticsSink(),
         hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
         hot_claim_store=FakeHotClaimStore(),
         candidate_gate=AlwaysCandidateGate(),
         factcheck_service=FakeFactCheckService(),

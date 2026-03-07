@@ -62,6 +62,7 @@ async def test_normalize_webhook_parses_group_text_message() -> None:
     assert message.quoted_text == "Earlier claim"
     assert message.forwarded is True
     assert message.text_sha256 is not None
+    assert message.text_simhash is not None
 
 
 @pytest.mark.asyncio
@@ -181,3 +182,4 @@ async def test_normalize_webhook_parses_factcheck_command() -> None:
     assert message.command_name == "factcheck"
     assert message.command_arg_text == "MOH confirmed that drinking salt water cures dengue"
     assert message.text == "MOH confirmed that drinking salt water cures dengue"
+    assert message.text_simhash is not None

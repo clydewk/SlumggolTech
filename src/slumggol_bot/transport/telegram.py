@@ -9,7 +9,7 @@ import httpx
 
 from slumggol_bot.config import AppSettings
 from slumggol_bot.schemas import ContentKind, NormalizedMessage
-from slumggol_bot.services.hashing import compute_text_hash
+from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 
 _FACTCHECK_COMMAND_RE = re.compile(
     r"^/factcheck(?:@[A-Za-z0-9_]+)?(?:\s+(?P<args>.*))?$",
@@ -141,6 +141,9 @@ class TelegramTransport:
             media_duration_seconds=media_duration_seconds,
             detected_languages=[],
             text_sha256=compute_text_hash(normalized_text or quoted_text or caption or hash_input),
+            text_simhash=compute_text_simhash(
+                normalized_text or quoted_text or caption or hash_input
+            ),
         )
 
     def _extract_message(self, payload: dict[str, Any]) -> dict[str, Any] | None:

@@ -17,7 +17,16 @@ def test_message_event_contains_only_hashes_not_raw_text() -> None:
         quoted_text="raw quote",
         text_sha256="text-hash",
     )
-    decision = type("Decision", (), {"candidate": True, "reason_codes": ["x"]})()
+    decision = type(
+        "Decision",
+        (),
+        {
+            "candidate": True,
+            "reason_codes": ["x"],
+            "match_type": None,
+            "match_distance": None,
+        },
+    )()
     event = message_event(message, decision=decision)
     assert "text" not in event.payload
     assert "quoted_text" not in event.payload

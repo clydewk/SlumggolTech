@@ -69,6 +69,7 @@ class ClaimCacheRepository:
         if entry is None:
             entry = ClaimCacheEntry(
                 claim_key=claim_key,
+                canonical_text_simhash=result.canonical_text_simhash,
                 verdict=result.verdict.value,
                 confidence=result.confidence,
                 reply_language=result.reply_language,
@@ -79,6 +80,7 @@ class ClaimCacheRepository:
             )
             self.session.add(entry)
         else:
+            entry.canonical_text_simhash = result.canonical_text_simhash
             entry.verdict = result.verdict.value
             entry.confidence = result.confidence
             entry.reply_language = result.reply_language
@@ -88,6 +90,21 @@ class ClaimCacheRepository:
             entry.expires_at = expires_at
             entry.last_used_at = datetime.now(UTC)
         await self.session.flush()
+
+    async def text_simhashes_for_claim_keys(self, claim_keys: Iterable[str]) -> dict[str, str]:
+        keys = list(dict.fromkeys(claim_keys))
+        if not keys:
+            return {}
+        result = await self.session.execute(
+            select(ClaimCacheEntry.claim_key, ClaimCacheEntry.canonical_text_simhash).where(
+                ClaimCacheEntry.claim_key.in_(keys)
+            )
+        )
+        return {
+            claim_key: text_simhash
+            for claim_key, text_simhash in result.all()
+            if text_simhash
+        }
 
 
 class HotClaimRepository:
@@ -101,6 +118,7 @@ class HotClaimRepository:
                 HotClaimEntry(
                     hash_key=claim.hash_key,
                     claim_key=claim.claim_key,
+                    text_simhash=claim.text_simhash,
                     reason=claim.reason,
                     score=claim.score,
                     expires_at=expires_at,

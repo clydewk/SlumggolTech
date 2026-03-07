@@ -38,6 +38,7 @@ class AppSettings(BaseSettings):
     demo_mode_ttl_minutes: int = 120
     hot_claim_min_groups: int = 2
     hot_claim_lookback_minutes: int = 60
+    text_simhash_max_distance: int = 3
 
     reply_confidence_threshold: float = 0.82
     min_sources_required: int = 2
