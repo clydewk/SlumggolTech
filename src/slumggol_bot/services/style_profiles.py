@@ -49,9 +49,21 @@ class StyleProfileService:
         )
 
     def prompt_guidance(self, profile: GroupStyleProfile) -> str:
-        languages = ", ".join(profile.dominant_languages) if profile.dominant_languages else "English"
-        punctuation = ", ".join(profile.punctuation_bias) if profile.punctuation_bias else "light punctuation"
-        particles = ", ".join(profile.discourse_particles) if profile.discourse_particles else "none"
+        languages = (
+            ", ".join(profile.dominant_languages)
+            if profile.dominant_languages
+            else "English"
+        )
+        punctuation = (
+            ", ".join(profile.punctuation_bias)
+            if profile.punctuation_bias
+            else "light punctuation"
+        )
+        particles = (
+            ", ".join(profile.discourse_particles)
+            if profile.discourse_particles
+            else "none"
+        )
         return (
             f"Use a familiar composite group tone. Dominant languages: {languages}. "
             f"Average length: {profile.average_length:.1f} chars. "
@@ -60,4 +72,3 @@ class StyleProfileService:
             f"Common discourse particles: {particles}. "
             "Do not imitate any specific person or name."
         )
-

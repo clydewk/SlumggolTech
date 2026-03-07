@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
-import yaml
+import yaml  # type: ignore[import-untyped]
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -114,10 +114,11 @@ class OpenAIFactCheckClient:
         if message.content_kind.value == "image" and message.media_url:
             content.append(await _image_input_content(message.media_url, message.media_mimetype))
         tools = [{"type": "web_search_preview"}] if allow_web_search else []
+        responses_api: Any = self.client.responses
         response = None
         parsed_payload = None
         for attempt, max_output_tokens in enumerate(_FACTCHECK_OUTPUT_TOKEN_BUDGETS, start=1):
-            response = await self.client.responses.create(
+            response = await responses_api.create(
                 model=self.settings.openai_model,
                 reasoning={"effort": "low"},
                 text={

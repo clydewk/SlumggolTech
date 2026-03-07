@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,9 +52,9 @@ class ClaimCacheRepository:
         entry = await self.session.get(ClaimCacheEntry, claim_key)
         if entry is None:
             return None
-        if entry.expires_at <= datetime.now(timezone.utc):
+        if entry.expires_at <= datetime.now(UTC):
             return None
-        entry.last_used_at = datetime.now(timezone.utc)
+        entry.last_used_at = datetime.now(UTC)
         await self.session.flush()
         return entry
 
@@ -86,7 +86,7 @@ class ClaimCacheRepository:
             entry.evidence_json = [item.model_dump(mode="json") for item in result.evidence]
             entry.source_quality_score = float(len(result.evidence))
             entry.expires_at = expires_at
-            entry.last_used_at = datetime.now(timezone.utc)
+            entry.last_used_at = datetime.now(UTC)
         await self.session.flush()
 
 

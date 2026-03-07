@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from slumggol_bot.schemas import AnalysisMode, ContentKind, HashObservation, NormalizedMessage
 from slumggol_bot.services.gating import CandidateGate
 
 
-def build_message(**overrides):
+def build_message(**overrides) -> NormalizedMessage:
     payload = {
-        "occurred_at": datetime.now(timezone.utc),
+        "occurred_at": datetime.now(UTC),
         "group_id": "group-1",
         "message_id": "message-1",
         "sender_id": "sender-1",
@@ -27,7 +27,13 @@ def test_candidate_gate_triggers_for_forwarded_cross_group_reuse() -> None:
     decision = gate.decide(
         message=message,
         analysis_mode=AnalysisMode.GATED,
-        hash_observations=[HashObservation(hash_key="abc", cross_group_count=2, same_group_count=1)],
+        hash_observations=[
+            HashObservation(
+                hash_key="abc",
+                cross_group_count=2,
+                same_group_count=1,
+            )
+        ],
         is_hot_hash=False,
     )
     assert decision.candidate is True

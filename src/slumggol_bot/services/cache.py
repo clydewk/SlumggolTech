@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from redis.asyncio import Redis
@@ -86,7 +86,7 @@ class RedisHashObservationStore:
 
     async def record(self, hash_keys: list[str], group_id: str) -> list[HashObservation]:
         observations: list[HashObservation] = []
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         for hash_key in hash_keys:
             groups_key = f"hash-groups:{hash_key}"
             local_key = f"hash-group-count:{hash_key}:{group_id}"

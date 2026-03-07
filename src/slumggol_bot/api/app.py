@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from functools import lru_cache
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -58,7 +59,7 @@ def _build_analytics(settings: AppSettings):
     return NoopAnalyticsSink(), NoopAnalyticsQueryService()
 
 
-async def get_session() -> AsyncSession:
+async def get_session() -> AsyncIterator[AsyncSession]:
     session_factory = get_session_factory()
     async with session_factory() as session:
         yield session
@@ -141,7 +142,7 @@ async def set_analysis_mode(
 async def pause_group(
     group_external_id: str,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> dict[str, bool]:
+) -> dict[str, str | bool]:
     repository = GroupRepository(session)
     group = await repository.set_paused(group_external_id, paused=True)
     await session.commit()
@@ -152,7 +153,7 @@ async def pause_group(
 async def resume_group(
     group_external_id: str,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> dict[str, bool]:
+) -> dict[str, str | bool]:
     repository = GroupRepository(session)
     group = await repository.set_paused(group_external_id, paused=False)
     await session.commit()
@@ -191,5 +192,11 @@ class GrouplessClaimCacheRepository:
     async def get(self, claim_key: str):
         return await self.inner.get(claim_key)
 
-    async def upsert(self, *, claim_key: str, result, expires_at):
+    async def upsert(
+        self,
+        *,
+        claim_key: str,
+        result,
+        expires_at,
+    ) -> None:
         return await self.inner.upsert(claim_key=claim_key, result=result, expires_at=expires_at)

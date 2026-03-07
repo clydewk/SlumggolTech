@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
+from typing import Any
 
-from arq import create_pool
 from arq.connections import RedisSettings
 from arq.worker import run_worker as arq_run_worker
 
@@ -28,11 +27,12 @@ async def refresh_outbreaks_job(ctx: dict) -> int:  # noqa: ARG001
         return len(claims)
 
 
-class WorkerSettings:
-    functions = [refresh_outbreaks_job]
-    redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
-    cron_jobs = []
+WORKER_SETTINGS: dict[str, Any] = {
+    "functions": [refresh_outbreaks_job],
+    "redis_settings": RedisSettings.from_dsn(get_settings().redis_url),
+    "cron_jobs": [],
+}
 
 
 def run_worker() -> None:
-    arq_run_worker(WorkerSettings)
+    arq_run_worker(WORKER_SETTINGS)

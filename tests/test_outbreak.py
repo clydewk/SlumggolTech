@@ -5,13 +5,26 @@ from slumggol_bot.services.outbreak import OutbreakService
 
 
 class FakeQueryService:
-    async def list_hot_claims(self, *, lookback_minutes: int, min_group_count: int, limit: int = 50):  # noqa: ARG002
-        return [HotClaim(hash_key="claim-key-1", claim_key="claim-key-1", reason="spread", score=4.0)]
+    async def list_hot_claims(
+        self,
+        *,
+        lookback_minutes: int,
+        min_group_count: int,
+        limit: int = 50,
+    ) -> list[HotClaim]:  # noqa: ARG002
+        return [
+            HotClaim(
+                hash_key="claim-key-1",
+                claim_key="claim-key-1",
+                reason="spread",
+                score=4.0,
+            )
+        ]
 
 
 class FakeHotStore:
     def __init__(self) -> None:
-        self.replaced = []
+        self.replaced: list[HotClaim] = []
 
     async def replace(self, claims, ttl_seconds: int):  # noqa: ANN001
         self.replaced = list(claims)
@@ -19,7 +32,7 @@ class FakeHotStore:
 
 class FakeHotRepository:
     def __init__(self) -> None:
-        self.replaced = []
+        self.replaced: list[HotClaim] = []
 
     async def replace_active(self, claims, expires_at):  # noqa: ANN001
         self.replaced = list(claims)

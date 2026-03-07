@@ -27,6 +27,108 @@ services:
     volumes:
       - redis_data:/data
 
+  migrate:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/slumggol
+      REDIS_URL: redis://redis:6379/0
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/slumggol
+      REDIS_URL: redis://redis:6379/0
+    command: ["uv", "run", "slumggol-api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/slumggol
+      REDIS_URL: redis://redis:6379/0
+    command: ["uv", "run", "slumggol-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.2.0
+    user: "0:0"
+    command:
+      [
+        "tunnel",
+        "--url",
+        "http://api:8000",
+        "--logfile",
+        "/shared/cloudflared.log",
+        "--loglevel",
+        "info",
+      ]
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles:
+      - tunnel
+    restart: unless-stopped
+    volumes:
+      - tunnel_state:/shared
+
+  webhook-sync:
+    build: .
+    env_file:
+      - .env
+    environment:
+      CLOUDFLARED_LOG_PATH: /shared/cloudflared.log
+      WEBHOOK_SYNC_POLL_SECONDS: 2
+    command: ["uv", "run", "python", "scripts/sync_telegram_webhook.py"]
+    depends_on:
+      cloudflared:
+        condition: service_started
+    profiles:
+      - tunnel
+    restart: unless-stopped
+    volumes:
+      - tunnel_state:/shared
+
 volumes:
   postgres_data:
   redis_data:
+  tunnel_state:

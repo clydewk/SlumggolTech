@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "0001_initial"
 down_revision = None
@@ -20,8 +21,18 @@ def upgrade() -> None:
         sa.Column("analysis_mode", sa.String(length=32), nullable=False, server_default="gated"),
         sa.Column("paused", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("style_profile", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
     op.create_index("ix_groups_external_id", "groups", ["external_id"], unique=True)
 
@@ -35,9 +46,24 @@ def upgrade() -> None:
         sa.Column("evidence_json", sa.JSON(), nullable=False),
         sa.Column("source_quality_score", sa.Float(), nullable=False, server_default="0"),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "last_used_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
 
     op.create_table(
@@ -48,9 +74,19 @@ def upgrade() -> None:
         sa.Column("reason", sa.String(length=64), nullable=False),
         sa.Column("score", sa.Float(), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
-    op.create_index("ix_hot_claim_entries_hash_key", "hot_claim_entries", ["hash_key"], unique=False)
+    op.create_index(
+        "ix_hot_claim_entries_hash_key",
+        "hot_claim_entries",
+        ["hash_key"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:

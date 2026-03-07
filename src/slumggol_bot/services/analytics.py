@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Iterable
+from collections.abc import Iterable
 from urllib.parse import urlparse
 
 import clickhouse_connect
@@ -72,7 +71,11 @@ class FailOpenAnalyticsSink(AnalyticsSink):
 
 
 class AnalyticsQueryService:
-    async def get_group_metrics(self, group_id: str, window_hours: int) -> GroupMetrics:  # pragma: no cover
+    async def get_group_metrics(
+        self,
+        group_id: str,
+        window_hours: int,
+    ) -> GroupMetrics:  # pragma: no cover
         raise NotImplementedError
 
     async def list_hot_claims(
@@ -143,10 +146,10 @@ class ClickHouseAnalyticsQueryService(AnalyticsQueryService):
             ).first_item or 0
             return GroupMetrics(
                 group_id=group_id,
-                hash_reuse_count=int(hash_reuse),
-                claim_spread_count=int(claim_spread),
-                spend_usd=float(spend or 0),
-                reply_count=int(replies or 0),
+                hash_reuse_count=_coerce_int(hash_reuse),
+                claim_spread_count=_coerce_int(claim_spread),
+                spend_usd=_coerce_float(spend),
+                reply_count=_coerce_int(replies),
             )
 
         return await asyncio.to_thread(_query)
@@ -190,3 +193,23 @@ class ClickHouseAnalyticsQueryService(AnalyticsQueryService):
             return hot_claims
 
         return await asyncio.to_thread(_query)
+
+
+def _coerce_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    return 0
+
+
+def _coerce_float(value: object) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    return 0.0

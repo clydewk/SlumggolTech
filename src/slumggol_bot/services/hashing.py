@@ -3,11 +3,10 @@ from __future__ import annotations
 import hashlib
 import io
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 import imagehash
 from PIL import Image
-
 
 _WHITESPACE_RE = re.compile(r"\s+")
 

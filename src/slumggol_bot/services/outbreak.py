@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from slumggol_bot.db.repositories import HotClaimRepository
 from slumggol_bot.schemas import HotClaim
@@ -30,7 +30,7 @@ class OutbreakService:
             min_group_count=self.min_group_count,
         )
         ttl_seconds = self.lookback_minutes * 60
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
         await self.hot_claim_store.replace(claims, ttl_seconds=ttl_seconds)
         await self.hot_claim_repository.replace_active(claims, expires_at=expires_at)
         return claims
