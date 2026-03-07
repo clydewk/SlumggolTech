@@ -166,54 +166,42 @@ class ClickHouseAnalyticsQueryService(AnalyticsQueryService):
 
     async def get_group_metrics(self, group_id: str, window_hours: int) -> GroupMetrics:
         def _query() -> GroupMetrics:
-            hash_reuse = (
-                self.client.query(
-                    """
+            hash_reuse = self.client.query(
+                """
                 SELECT countDistinct(hash_key)
                 FROM hash_reuse_1h
                 WHERE window_start >= now() - INTERVAL %(hours)s HOUR
                   AND group_id = %(group_id)s
                 """,
-                    parameters={"hours": window_hours, "group_id": group_id},
-                ).first_item
-                or 0
-            )
-            claim_spread = (
-                self.client.query(
-                    """
+                parameters={"hours": window_hours, "group_id": group_id},
+            ).first_item or 0
+            claim_spread = self.client.query(
+                """
                 SELECT countDistinct(claim_key)
                 FROM claim_spread_5m
                 WHERE window_start >= now() - INTERVAL %(hours)s HOUR
                   AND group_id = %(group_id)s
                 """,
-                    parameters={"hours": window_hours, "group_id": group_id},
-                ).first_item
-                or 0
-            )
-            spend = (
-                self.client.query(
-                    """
+                parameters={"hours": window_hours, "group_id": group_id},
+            ).first_item or 0
+            spend = self.client.query(
+                """
                 SELECT sum(total_cost_usd)
                 FROM model_spend_daily
                 WHERE day >= toDate(now() - INTERVAL %(hours)s HOUR)
                   AND group_id = %(group_id)s
                 """,
-                    parameters={"hours": window_hours, "group_id": group_id},
-                ).first_item
-                or 0
-            )
-            replies = (
-                self.client.query(
-                    """
+                parameters={"hours": window_hours, "group_id": group_id},
+            ).first_item or 0
+            replies = self.client.query(
+                """
                 SELECT sum(reply_count)
                 FROM reply_outcomes_daily
                 WHERE day >= toDate(now() - INTERVAL %(hours)s HOUR)
                   AND group_id = %(group_id)s
                 """,
-                    parameters={"hours": window_hours, "group_id": group_id},
-                ).first_item
-                or 0
-            )
+                parameters={"hours": window_hours, "group_id": group_id},
+            ).first_item or 0
             return GroupMetrics(
                 group_id=group_id,
                 hash_reuse_count=_coerce_int(hash_reuse),
@@ -248,19 +236,15 @@ class ClickHouseAnalyticsQueryService(AnalyticsQueryService):
                     "limit": limit,
                 },
             )
-            hot_claims: list[HotClaim] = []
-            for row in results.result_rows:
-                claim_key = row[0]
-                score = float(row[1])
-                hot_claims.append(
-                    HotClaim(
-                        hash_key=claim_key,
-                        claim_key=claim_key,
-                        reason="claim_spread",
-                        score=score,
-                    )
+            return [
+                HotClaim(
+                    hash_key=row[0],
+                    claim_key=row[0],
+                    reason="claim_spread",
+                    score=float(row[1]),
                 )
-            return hot_claims
+                for row in results.result_rows
+            ]
 
         return await asyncio.to_thread(_query)
 
@@ -412,27 +396,25 @@ class ClickHouseAnalyticsQueryService(AnalyticsQueryService):
                     "limit": limit,
                 },
             )
-            rows: list[TrendingClaimRow] = []
-            for row in results.result_rows:
-                rows.append(
-                    TrendingClaimRow(
-                        claim_key=str(row[0]),
-                        canonical_claim_en=str(row[1] or ""),
-                        claim_category=_coerce_claim_category(row[2]),
-                        risk_level=_coerce_risk_level(row[3]),
-                        actionability=_coerce_actionability(row[4]),
-                        latest_verdict=_coerce_verdict(row[5]),
-                        has_official_sg_source=bool(_coerce_int(row[6])),
-                        official_source_domain_count=_coerce_int(row[7]),
-                        distinct_groups=_coerce_int(row[8]),
-                        event_count=_coerce_int(row[9]),
-                        reply_count=_coerce_int(row[10]),
-                        max_confidence=_coerce_float(row[11]),
-                        first_seen_at=row[12],
-                        last_seen_at=row[13],
-                    )
+            return [
+                TrendingClaimRow(
+                    claim_key=str(row[0]),
+                    canonical_claim_en=str(row[1] or ""),
+                    claim_category=_coerce_claim_category(row[2]),
+                    risk_level=_coerce_risk_level(row[3]),
+                    actionability=_coerce_actionability(row[4]),
+                    latest_verdict=_coerce_verdict(row[5]),
+                    has_official_sg_source=bool(_coerce_int(row[6])),
+                    official_source_domain_count=_coerce_int(row[7]),
+                    distinct_groups=_coerce_int(row[8]),
+                    event_count=_coerce_int(row[9]),
+                    reply_count=_coerce_int(row[10]),
+                    max_confidence=_coerce_float(row[11]),
+                    first_seen_at=row[12],
+                    last_seen_at=row[13],
                 )
-            return rows
+                for row in results.result_rows
+            ]
 
         return await asyncio.to_thread(_query)
 
@@ -481,20 +463,18 @@ class ClickHouseAnalyticsQueryService(AnalyticsQueryService):
                 """,
                 parameters={"hours": lookback_hours, "claim_key": claim_key},
             )
-            rows: list[ClaimGroupSpreadRow] = []
-            for row in results.result_rows:
-                rows.append(
-                    ClaimGroupSpreadRow(
-                        claim_key=str(row[0]),
-                        group_id=str(row[1]),
-                        group_display_name=str(row[2]) if row[2] else None,
-                        first_seen_at=row[3],
-                        last_seen_at=row[4],
-                        event_count=_coerce_int(row[5]),
-                        reply_count=_coerce_int(row[6]),
-                    )
+            return [
+                ClaimGroupSpreadRow(
+                    claim_key=str(row[0]),
+                    group_id=str(row[1]),
+                    group_display_name=str(row[2]) if row[2] else None,
+                    first_seen_at=row[3],
+                    last_seen_at=row[4],
+                    event_count=_coerce_int(row[5]),
+                    reply_count=_coerce_int(row[6]),
                 )
-            return rows
+                for row in results.result_rows
+            ]
 
         return await asyncio.to_thread(_query)
 

@@ -16,11 +16,8 @@ from slumggol_bot.db.session import create_session_factory
 from slumggol_bot.schemas import (
     AnalysisMode,
     ClaimCategory,
-    ClaimGroupSpreadRow,
-    DashboardSummary,
     FactCheckResult,
     RiskLevel,
-    TrendingClaimRow,
 )
 from slumggol_bot.services.analytics import (
     ClickHouseAnalyticsQueryService,
@@ -83,9 +80,7 @@ def require_admin_token(
     authorization: str | None = Header(default=None, alias="Authorization"),  # noqa: B008
 ) -> None:
     expected = get_settings().admin_api_token
-    if not expected:
-        raise HTTPException(status_code=401, detail="Missing admin token.")
-    if not authorization:
+    if not expected or not authorization:
         raise HTTPException(status_code=401, detail="Missing admin token.")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -259,7 +254,7 @@ async def get_dashboard_summary(
     hours: int = 24,
     _: None = Depends(require_admin_token),  # noqa: B008
 ) -> dict:
-    summary: DashboardSummary = await app.state.analytics_query_service.get_dashboard_summary(hours)
+    summary = await app.state.analytics_query_service.get_dashboard_summary(hours)
     return summary.model_dump(mode="json")
 
 
@@ -272,14 +267,16 @@ async def get_trending_claims(
     risk_level: RiskLevel | None = None,
     _: None = Depends(require_admin_token),  # noqa: B008
 ) -> list[dict]:
-    rows: list[TrendingClaimRow] = await app.state.analytics_query_service.list_trending_claims(
-        lookback_hours=hours,
-        min_group_count=min_group_count,
-        limit=limit,
-        category=category,
-        risk_level=risk_level,
-    )
-    return [row.model_dump(mode="json") for row in rows]
+    return [
+        row.model_dump(mode="json")
+        for row in await app.state.analytics_query_service.list_trending_claims(
+            lookback_hours=hours,
+            min_group_count=min_group_count,
+            limit=limit,
+            category=category,
+            risk_level=risk_level,
+        )
+    ]
 
 
 @app.get("/admin/dashboard/claims/{claim_key}/groups")
@@ -288,13 +285,13 @@ async def get_claim_group_spread(
     hours: int = 24,
     _: None = Depends(require_admin_token),  # noqa: B008
 ) -> list[dict]:
-    rows: list[
-        ClaimGroupSpreadRow
-    ] = await app.state.analytics_query_service.list_claim_group_spread(
-        claim_key=claim_key,
-        lookback_hours=hours,
-    )
-    return [row.model_dump(mode="json") for row in rows]
+    return [
+        row.model_dump(mode="json")
+        for row in await app.state.analytics_query_service.list_claim_group_spread(
+            claim_key=claim_key,
+            lookback_hours=hours,
+        )
+    ]
 
 
 class GrouplessClaimCacheRepository:
