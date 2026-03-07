@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +10,7 @@ from slumggol_bot.schemas import (
     AnalysisMode,
     AnalyticsEvent,
     CandidateDecision,
+    ClaimCategory,
     FactCheckResult,
     GroupStyleProfile,
     NormalizedMessage,
@@ -73,7 +73,10 @@ class PipelineOrchestrator:
         return {"processed": processed, "replied": replied}
 
     async def process_message(self, message: NormalizedMessage) -> FactCheckResult | None:
-        group = await self.group_repo.get_or_create(external_id=message.group_id)
+        group = await self.group_repo.get_or_create(
+            external_id=message.group_id,
+            display_name=message.group_display_name,
+        )
         profile = GroupStyleProfile.model_validate(group.style_profile or {})
         updated_profile = self.style_profile_service.update_profile(profile, message)
         await self.group_repo.update_style_profile(group, updated_profile)
@@ -226,6 +229,10 @@ def should_reply(result: FactCheckResult) -> bool:
         and result.verdict in {Verdict.FALSE, Verdict.MISLEADING, Verdict.UNSUPPORTED}
         and result.confidence >= 0.82
         and len(result.evidence) >= 2
+        and (
+            result.claim_category not in {ClaimCategory.PUBLIC_HEALTH, ClaimCategory.PUBLIC_SAFETY}
+            or result.has_official_sg_source
+        )
     )
 
 
@@ -306,6 +313,7 @@ def message_event(message: NormalizedMessage, decision: CandidateDecision) -> An
             "event_id": message.message_id,
             "occurred_at": message.occurred_at,
             "group_id": message.group_id,
+            "group_display_name": message.group_display_name or "",
             "sender_hash": compute_text_hash(message.sender_id) or message.sender_id,
             "message_id": message.message_id,
             "forwarded": int(message.forwarded),
@@ -330,13 +338,19 @@ def claim_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
         table="claim_events",
         payload={
             "event_id": f"{message.message_id}:claim",
-            "occurred_at": datetime.now(UTC),
+            "occurred_at": message.occurred_at,
             "group_id": message.group_id,
+            "group_display_name": message.group_display_name or "",
             "message_id": message.message_id,
             "claim_key": result.claim_key,
             "canonical_claim_en": result.canonical_claim_en,
             "reply_language": result.reply_language,
             "confidence": result.confidence,
+            "claim_category": result.claim_category.value,
+            "risk_level": result.risk_level.value,
+            "actionability": result.actionability.value,
+            "has_official_sg_source": int(result.has_official_sg_source),
+            "official_source_domain_count": result.official_source_domain_count,
         },
     )
 
@@ -346,8 +360,9 @@ def factcheck_event(message: NormalizedMessage, result: FactCheckResult) -> Anal
         table="factcheck_events",
         payload={
             "event_id": f"{message.message_id}:factcheck",
-            "occurred_at": datetime.now(UTC),
+            "occurred_at": message.occurred_at,
             "group_id": message.group_id,
+            "group_display_name": message.group_display_name or "",
             "message_id": message.message_id,
             "claim_key": result.claim_key,
             "verdict": result.verdict.value,
@@ -357,6 +372,11 @@ def factcheck_event(message: NormalizedMessage, result: FactCheckResult) -> Anal
             "cache_match_distance": result.cache_match_distance or 0,
             "needs_reply": int(result.needs_reply),
             "reason_codes": result.reason_codes,
+            "claim_category": result.claim_category.value,
+            "risk_level": result.risk_level.value,
+            "actionability": result.actionability.value,
+            "has_official_sg_source": int(result.has_official_sg_source),
+            "official_source_domain_count": result.official_source_domain_count,
             "source_domains": [source.domain for source in result.evidence],
         },
     )
@@ -367,14 +387,20 @@ def reply_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
         table="reply_events",
         payload={
             "event_id": f"{message.message_id}:reply",
-            "occurred_at": datetime.now(UTC),
+            "occurred_at": message.occurred_at,
             "group_id": message.group_id,
+            "group_display_name": message.group_display_name or "",
             "message_id": message.message_id,
             "claim_key": result.claim_key,
             "reply_language": result.reply_language,
             "confidence": result.confidence,
             "verdict": result.verdict.value,
             "reply_count": 1,
+            "claim_category": result.claim_category.value,
+            "risk_level": result.risk_level.value,
+            "actionability": result.actionability.value,
+            "has_official_sg_source": int(result.has_official_sg_source),
+            "official_source_domain_count": result.official_source_domain_count,
         },
     )
 
@@ -385,11 +411,15 @@ def usage_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
         table="usage_events",
         payload={
             "event_id": f"{message.message_id}:usage",
-            "occurred_at": datetime.now(UTC),
+            "occurred_at": message.occurred_at,
             "group_id": message.group_id,
+            "group_display_name": message.group_display_name or "",
             "message_id": message.message_id,
             "claim_key": result.claim_key,
             "model": "gpt-5.4",
+            "claim_category": result.claim_category.value,
+            "risk_level": result.risk_level.value,
+            "actionability": result.actionability.value,
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
             "reasoning_tokens": usage.reasoning_tokens,

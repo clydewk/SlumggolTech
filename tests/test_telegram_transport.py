@@ -42,7 +42,7 @@ async def test_normalize_webhook_parses_group_text_message() -> None:
                 "message": {
                     "message_id": 12,
                     "date": 1_710_000_000,
-                    "chat": {"id": -100123, "type": "supergroup"},
+                    "chat": {"id": -100123, "type": "supergroup", "title": "SG Rumours"},
                     "from": {"id": 42},
                     "text": "Claim text",
                     "reply_to_message": {"text": "Earlier claim"},
@@ -54,6 +54,7 @@ async def test_normalize_webhook_parses_group_text_message() -> None:
     assert len(messages) == 1
     message = messages[0]
     assert message.group_id == "-100123"
+    assert message.group_display_name == "SG Rumours"
     assert message.message_id == "-100123:12"
     assert message.transport_message_id == 12
     assert message.sender_id == "42"
@@ -89,7 +90,7 @@ async def test_normalize_webhook_resolves_photo_url() -> None:
                 "message": {
                     "message_id": 98,
                     "date": 1_710_000_123,
-                    "chat": {"id": -200456, "type": "group"},
+                    "chat": {"id": -200456, "type": "group", "title": "Estate Watch"},
                     "from": {"id": 77},
                     "caption": "Look at this",
                     "photo": [

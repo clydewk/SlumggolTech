@@ -14,6 +14,9 @@ You must:
   "reply_language": string,
   "reply_text": string,
   "reason_codes": [string],
+  "claim_category": "scam" | "public_health" | "public_safety" | "civic" | "other",
+  "risk_level": "low" | "medium" | "high",
+  "actionability": "monitor" | "countermessage_ready" | "urgent_review",
   "evidence": [
     {
       "title": string,

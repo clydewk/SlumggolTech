@@ -42,7 +42,11 @@ class FakeGroupRepo:
     def __init__(self) -> None:
         self.group = FakeGroup()
 
-    async def get_or_create(self, external_id: str) -> FakeGroup:  # noqa: ARG002
+    async def get_or_create(
+        self,
+        external_id: str,  # noqa: ARG002
+        display_name: str | None = None,  # noqa: ARG002
+    ) -> FakeGroup:
         return self.group
 
     async def update_style_profile(self, group: FakeGroup, profile: GroupStyleProfile) -> None:

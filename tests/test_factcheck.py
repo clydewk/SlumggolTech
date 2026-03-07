@@ -18,7 +18,7 @@ from slumggol_bot.schemas import (
     Verdict,
 )
 from slumggol_bot.services.cache import InMemoryHotClaimStore
-from slumggol_bot.services.factcheck import FactCheckService, OpenAIFactCheckClient
+from slumggol_bot.services.factcheck import FactCheckService, OpenAIFactCheckClient, SourceRegistry
 from slumggol_bot.services.hashing import compute_text_simhash
 from slumggol_bot.services.style_profiles import StyleProfileService
 
@@ -41,6 +41,11 @@ class FakeCacheRepo:
                 "reply_language": result.reply_language,
                 "reply_template": result.reply_text,
                 "evidence_json": [item.model_dump(mode="json") for item in result.evidence],
+                "claim_category": result.claim_category.value,
+                "risk_level": result.risk_level.value,
+                "actionability": result.actionability.value,
+                "has_official_sg_source": result.has_official_sg_source,
+                "official_source_domain_count": result.official_source_domain_count,
                 "expires_at": expires_at,
             },
         )()
@@ -70,10 +75,22 @@ class FakeClient:
 
 class FakeRegistry:
     def preferred_domains(self):
-        return ["gov.sg"]
+        return ["gov.sg", "moh.gov.sg"]
 
     def prompt_hint(self) -> str:
         return "Prefer gov.sg"
+
+    def is_preferred_domain(self, domain: str) -> bool:
+        return domain.removeprefix("www.") in {"gov.sg", "moh.gov.sg"}
+
+    def is_official_domain(self, domain: str) -> bool:
+        return domain.removeprefix("www.") in {"gov.sg", "moh.gov.sg"}
+
+    def has_official_or_singapore_first_source(self, domains: list[str]) -> bool:
+        return any(self.is_preferred_domain(domain) for domain in domains)
+
+    def official_source_domain_count(self, domains: list[str]) -> int:
+        return sum(1 for domain in dict.fromkeys(domains) if self.is_official_domain(domain))
 
 
 class FakeResponsesClient:
@@ -383,6 +400,9 @@ async def test_openai_factcheck_client_retries_truncated_response(
                     '"reply_text":"This is false. There is no official guidance '
                     'saying salt water cures dengue.",'
                     '"reason_codes":["public_health_claim","official_sources_contradict"],'
+                    '"claim_category":"public_health",'
+                    '"risk_level":"high",'
+                    '"actionability":"countermessage_ready",'
                     '"evidence":['
                     '{"title":"MOH","url":"https://www.moh.gov.sg/example","domain":"moh.gov.sg","published_at":"2024-01-01"},'
                     '{"title":"gov.sg","url":"https://www.gov.sg/example","domain":"gov.sg","published_at":"2024-01-02"}'
@@ -412,9 +432,37 @@ async def test_openai_factcheck_client_retries_truncated_response(
 
     assert result.verdict == Verdict.FALSE
     assert len(result.evidence) == 2
+    assert result.has_official_sg_source is True
+    assert result.official_source_domain_count == 2
     assert fake_responses.calls[0]["text"]["format"]["type"] == "json_schema"
     assert (
         fake_responses.calls[0]["max_output_tokens"]
         < fake_responses.calls[1]["max_output_tokens"]
     )
     assert "Retrying incomplete OpenAI factcheck response" in caplog.text
+
+
+def test_source_registry_classifies_preferred_and_official_domains(tmp_path) -> None:
+    registry_path = tmp_path / "registry.yml"
+    registry_path.write_text(
+        "\n".join(
+            [
+                "domains:",
+                "  - domain: gov.sg",
+                "    category: government",
+                "    priority: 100",
+                "  - domain: cna.asia",
+                "    category: news",
+                "    priority: 80",
+            ]
+        )
+    )
+
+    registry = SourceRegistry(registry_path)
+
+    assert registry.is_preferred_domain("www.gov.sg") is True
+    assert registry.is_preferred_domain("cna.asia") is True
+    assert registry.is_official_domain("gov.sg") is True
+    assert registry.is_official_domain("cna.asia") is False
+    assert registry.has_official_or_singapore_first_source(["example.com", "cna.asia"]) is True
+    assert registry.official_source_domain_count(["gov.sg", "cna.asia", "gov.sg"]) == 1

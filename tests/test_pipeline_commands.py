@@ -6,6 +6,7 @@ import pytest
 
 from slumggol_bot.schemas import (
     CandidateDecision,
+    ClaimCategory,
     ContentKind,
     EvidenceSource,
     FactCheckResult,
@@ -18,6 +19,7 @@ from slumggol_bot.services.pipeline import (
     PipelineOrchestrator,
     build_factcheck_command_reply,
     message_for_assessment,
+    should_reply,
 )
 
 
@@ -37,7 +39,11 @@ class FakeGroupRepo:
     def __init__(self) -> None:
         self.group = FakeGroup()
 
-    async def get_or_create(self, external_id: str) -> FakeGroup:  # noqa: ARG002
+    async def get_or_create(
+        self,
+        external_id: str,  # noqa: ARG002
+        display_name: str | None = None,  # noqa: ARG002
+    ) -> FakeGroup:
         return self.group
 
     async def update_style_profile(self, group: FakeGroup, profile: GroupStyleProfile) -> None:
@@ -259,3 +265,25 @@ def test_build_factcheck_command_reply_includes_sources() -> None:
     assert "Verdict: unsupported (72% confidence)" in reply_text
     assert "I could not find strong evidence supporting this claim." in reply_text
     assert "https://www.moh.gov.sg" in reply_text
+
+
+def test_should_reply_requires_preferred_source_for_public_health() -> None:
+    result = FactCheckResult(
+        needs_reply=True,
+        verdict=Verdict.FALSE,
+        confidence=0.95,
+        canonical_claim_en="canonical claim",
+        reply_language="English",
+        reply_text="Countermessage",
+        evidence=[
+            EvidenceSource(title="Unofficial", url="https://example.com", domain="example.com"),
+            EvidenceSource(title="Blog", url="https://blog.example.com", domain="blog.example.com"),
+        ],
+        claim_category=ClaimCategory.PUBLIC_HEALTH,
+        has_official_sg_source=False,
+        usage=ModelUsage(),
+        claim_key="claim-key-1",
+    )
+
+    assert should_reply(result) is False
+    assert should_reply(result.model_copy(update={"has_official_sg_source": True})) is True
