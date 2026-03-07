@@ -43,7 +43,7 @@ docker compose --profile polling up --build
 
 ## ClickHouse Cloud Setup
 
-Use ClickHouse Cloud for analytics and the dashboard views. Do not reuse credentials that were posted in chat; rotate or verify them in the ClickHouse Cloud console first.
+Use ClickHouse Cloud for analytics and the dashboard views.
 
 1. Set these `.env` values before enabling ClickHouse:
 
