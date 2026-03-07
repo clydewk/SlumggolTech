@@ -108,6 +108,7 @@ class FakeFactCheckService:
         *,
         message: NormalizedMessage,
         style_profile: GroupStyleProfile,  # noqa: ARG002
+        language_conflict=None,  # noqa: ANN001, ARG002
     ) -> FactCheckResult:
         self.messages.append(message)
         return FactCheckResult(

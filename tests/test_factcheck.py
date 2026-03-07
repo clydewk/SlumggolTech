@@ -164,6 +164,52 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
 
 
 @pytest.mark.asyncio
+async def test_factcheck_service_backfills_hot_claim_store_for_immediate_reuse() -> None:
+    cache = FakeCacheRepo()
+    hot_store = InMemoryHotClaimStore()
+    client = FakeClient()
+    service = FactCheckService(
+        client=client,
+        registry=FakeRegistry(),
+        cache_repo=cache,
+        hot_claim_store=hot_store,
+        style_profile_service=StyleProfileService(),
+        text_simhash_max_distance=3,
+    )
+
+    first_result = await service.assess_candidate(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="group-1",
+            message_id="message-1",
+            sender_id="sender-1",
+            content_kind=ContentKind.TEXT,
+            text="BREAKING NEWS: iran nuked israel",
+            text_sha256="hash-1",
+        ),
+        style_profile=GroupStyleProfile(),
+    )
+    second_result = await service.assess_candidate(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="group-1",
+            message_id="message-2",
+            sender_id="sender-2",
+            content_kind=ContentKind.TEXT,
+            text="BREAKING NEWS: iran nuked israel",
+            text_sha256="hash-1",
+        ),
+        style_profile=GroupStyleProfile(),
+    )
+
+    assert first_result.cache_hit is False
+    assert second_result.cache_hit is True
+    assert second_result.cache_match_type == "exact_hot"
+    assert second_result.reply_text == first_result.reply_text
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_factcheck_service_returns_simhash_hot_claim_without_model_call() -> None:
     cache = FakeCacheRepo()
     canonical_text = "moh dengue alert dengue alert"
