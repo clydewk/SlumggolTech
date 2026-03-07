@@ -28,6 +28,7 @@ class AppSettings(BaseSettings):
     telegram_poll_timeout_seconds: int = 20
     telegram_poll_interval_seconds: float = 1.0
     telegram_poll_limit: int = 50
+    admin_api_token: str = ""
 
     enable_clickhouse: bool = True
     clickhouse_url: str = ""
@@ -42,7 +43,10 @@ class AppSettings(BaseSettings):
     demo_mode_ttl_minutes: int = 120
     hot_claim_min_groups: int = 2
     hot_claim_lookback_minutes: int = 60
+    outbreak_refresh_interval_minutes: int = 5
     text_simhash_max_distance: int = 3
+    metabase_port: int = 3000
+    metabase_site_url: str = "http://localhost:3000"
 
     reply_confidence_threshold: float = 0.82
     min_sources_required: int = 2
