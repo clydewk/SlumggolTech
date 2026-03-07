@@ -12,20 +12,16 @@ Telegram fact-check bot scaffold built around:
 ## Quickstart
 
 1. Copy `.env.example` to `.env`.
-2. Set `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and optionally `TELEGRAM_WEBHOOK_SECRET` in `.env`.
-3. Start the full local stack with Docker:
+2. Set `OPENAI_API_KEY` and `TELEGRAM_BOT_TOKEN` in `.env`. Leave `TELEGRAM_INGEST_MODE=polling` for the default local-development path.
+3. Start the local stack with Docker, including the Telegram poller:
 
 ```bash
-docker compose up --build
+docker compose --profile polling up --build
 ```
 
-4. If you also want Docker to expose the local API to Telegram with a Cloudflare quick tunnel and keep the Telegram webhook updated automatically, start the optional tunnel profile:
+4. Create a Telegram bot with BotFather, disable bot privacy for groups with `/setprivacy`, and add the bot to the target Telegram group or supergroup.
 
-```bash
-docker compose --profile tunnel up --build -d --remove-orphans
-```
-
-5. Or, if you prefer to run only Postgres and Redis in Docker, start local dependencies:
+5. If you prefer to run only Postgres and Redis in Docker, start local dependencies:
 
 ```bash
 docker compose up -d postgres redis
@@ -49,18 +45,33 @@ uv run alembic upgrade head
 uv run slumggol-api
 ```
 
-9. Create a Telegram bot with BotFather, disable bot privacy for groups with `/setprivacy`, and add the bot to the target Telegram group or supergroup.
+9. Start the poller:
 
-10. Expose the API on a public HTTPS URL, set `PUBLIC_WEBHOOK_URL` in `.env`, then register the webhook:
+```bash
+uv run slumggol-poller
+```
+
+10. Start the worker:
+
+```bash
+uv run slumggol-worker
+```
+
+## Optional Webhook Mode
+
+If you want webhook delivery instead of polling:
+
+1. Set `TELEGRAM_INGEST_MODE=webhook` in `.env`.
+2. Expose the API on a public HTTPS URL, set `PUBLIC_WEBHOOK_URL` in `.env`, then register the webhook:
 
 ```bash
 ./scripts/set_telegram_webhook.sh
 ```
 
-11. Start the worker:
+3. Or, for local development with a Cloudflare quick tunnel and automatic webhook registration, start the optional tunnel profile:
 
 ```bash
-uv run slumggol-worker
+docker compose --profile tunnel up --build -d --remove-orphans
 ```
 
 ## Notes
@@ -68,8 +79,10 @@ uv run slumggol-worker
 - The app is designed to run without ClickHouse in local development. Analytics failures must never block replies.
 - Raw inbound text, image bytes, audio bytes, and transcripts are processed in memory and not persisted.
 - ClickHouse schemas and materialized views live in `sql/clickhouse_bot_analytics.sql`.
-- Telegram uses a webhook in this app, so it must reach a public HTTPS endpoint; local-only `localhost` webhooks will not work.
-- The optional `cloudflared` Compose profile is only there to expose `api:8000` to Telegram during local development.
+- Polling is the default local-development ingress path because it does not need a public HTTPS endpoint.
+- The poller disables any existing Telegram webhook on startup before calling `getUpdates`.
+- Webhook mode still requires a public HTTPS endpoint; local-only `localhost` webhooks will not work.
+- The optional `cloudflared` Compose profile is only there to expose `api:8000` to Telegram during local development when `TELEGRAM_INGEST_MODE=webhook`.
 - The optional `webhook-sync` Compose service watches the Cloudflare quick-tunnel URL and re-registers the Telegram webhook automatically after tunnel restarts.
 - `./scripts/set_telegram_webhook.sh` registers the bot against `${PUBLIC_WEBHOOK_URL}/webhooks/telegram`.
 - `./scripts/get_cloudflare_tunnel_url.sh` prints the current Cloudflare quick-tunnel URL from Docker logs.

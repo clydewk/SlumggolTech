@@ -108,6 +108,7 @@ async def test_normalize_webhook_resolves_photo_url() -> None:
     assert message.media_mimetype == "image/jpeg"
     assert message.media_url == "https://api.telegram.org/file/bottest-token/photos/file_1.jpg"
     assert message.text_sha256 is not None
+    assert message.text_simhash is not None
 
 
 @pytest.mark.asyncio
@@ -157,6 +158,55 @@ async def test_send_group_message_supports_reply_to_message() -> None:
             "Correction",
             reply_to_message_id=77,
         )
+
+
+@pytest.mark.asyncio
+async def test_fetch_updates_calls_telegram_get_updates() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/bottest-token/getUpdates"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "timeout": 20,
+            "limit": 10,
+            "allowed_updates": ["message"],
+            "offset": 101,
+        }
+        assert request.extensions["timeout"]["read"] == 25.0
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": [{"update_id": 101, "message": {"message_id": 1}}]},
+        )
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        updates = await transport.fetch_updates(offset=101, timeout_seconds=20, limit=10)
+
+    assert updates == [{"update_id": 101, "message": {"message_id": 1}}]
+
+
+@pytest.mark.asyncio
+async def test_delete_webhook_calls_telegram_delete_webhook() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/bottest-token/deleteWebhook"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {"drop_pending_updates": False}
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        await transport.delete_webhook(drop_pending_updates=False)
 
 
 @pytest.mark.asyncio

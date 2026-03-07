@@ -27,6 +27,9 @@ class TelegramTransport:
         )
 
     async def normalize_webhook(self, payload: dict[str, Any]) -> list[NormalizedMessage]:
+        return await self.normalize_update(payload)
+
+    async def normalize_update(self, payload: dict[str, Any]) -> list[NormalizedMessage]:
         message = self._extract_message(payload)
         if message is None:
             logger.info("Ignoring Telegram update without message payload")
@@ -53,6 +56,40 @@ class TelegramTransport:
         )
         return [normalized]
 
+    async def fetch_updates(
+        self,
+        *,
+        offset: int | None,
+        timeout_seconds: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.telegram_bot_token:
+            return []
+        payload: dict[str, Any] = {
+            "timeout": timeout_seconds,
+            "limit": limit,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+        response = await self.client.post(
+            self._api_path("getUpdates"),
+            json=payload,
+            timeout=max(float(timeout_seconds) + 5.0, 15.0),
+        )
+        response.raise_for_status()
+        raw_result = response.json().get("result", [])
+        return [item for item in raw_result if isinstance(item, dict)]
+
+    async def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+        if not self.settings.telegram_bot_token:
+            return
+        response = await self.client.post(
+            self._api_path("deleteWebhook"),
+            json={"drop_pending_updates": drop_pending_updates},
+        )
+        response.raise_for_status()
+
     async def send_group_message(
         self,
         group_id: str,
@@ -76,6 +113,9 @@ class TelegramTransport:
             json=payload,
         )
         response.raise_for_status()
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
 
     async def _normalize_message(self, message: dict[str, Any]) -> NormalizedMessage:
         chat = message.get("chat", {})
