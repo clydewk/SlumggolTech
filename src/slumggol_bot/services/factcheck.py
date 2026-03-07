@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -19,14 +20,20 @@ from slumggol_bot.schemas import (
     Verdict,
 )
 from slumggol_bot.services.cache import HotClaimStore
-from slumggol_bot.services.hashing import best_available_hash, compute_text_hash
+from slumggol_bot.services.hashing import compute_text_hash
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 
 class ClaimCacheProtocol(Protocol):
     async def get(self, claim_key: str) -> Any | None: ...
 
-    async def upsert(self, *, claim_key: str, result: FactCheckResult, expires_at: datetime) -> None: ...
+    async def upsert(
+        self,
+        *,
+        claim_key: str,
+        result: FactCheckResult,
+        expires_at: datetime,
+    ) -> None: ...
 
 
 class SourceRegistry:
@@ -52,13 +59,10 @@ class OpenAIFactCheckClient:
     async def transcribe(self, audio_url: str) -> tuple[str, float]:
         if not audio_url:
             return "", 0.0
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(audio_url)
-            response.raise_for_status()
-            audio_bytes = response.content
+        audio_bytes, content_type = await _download_media_bytes(audio_url)
 
         transcript = await self.client.audio.transcriptions.create(
-            file=("voice-note.ogg", audio_bytes, "audio/ogg"),
+            file=_transcription_upload(audio_bytes, content_type),
             model=self.settings.openai_transcribe_model,
         )
         text = getattr(transcript, "text", "") or ""
@@ -79,7 +83,11 @@ class OpenAIFactCheckClient:
             for part in [
                 f"Group message text: {message.primary_text}",
                 f"Quoted context: {message.quoted_text}" if message.quoted_text else "",
-                f"Languages: {', '.join(message.detected_languages)}" if message.detected_languages else "",
+                (
+                    f"Languages: {', '.join(message.detected_languages)}"
+                    if message.detected_languages
+                    else ""
+                ),
                 registry.prompt_hint(),
                 style_profile_service.prompt_guidance(style_profile),
             ]
@@ -87,13 +95,7 @@ class OpenAIFactCheckClient:
         )
         content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
         if message.content_kind.value == "image" and message.media_url:
-            content.append(
-                {
-                    "type": "input_image",
-                    "image_url": message.media_url,
-                    "detail": "auto",
-                }
-            )
+            content.append(await _image_input_content(message.media_url, message.media_mimetype))
         tools = [{"type": "web_search_preview"}] if allow_web_search else []
 
         response = await self.client.responses.create(
@@ -140,7 +142,11 @@ def _extract_output_text(response: Any) -> str:
     raise ValueError("OpenAI response did not include output text.")
 
 
-def _usage_from_response(response: Any, settings: AppSettings, allow_web_search: bool) -> ModelUsage:
+def _usage_from_response(
+    response: Any,
+    settings: AppSettings,
+    allow_web_search: bool,
+) -> ModelUsage:
     usage = getattr(response, "usage", None)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
@@ -158,6 +164,41 @@ def _usage_from_response(response: Any, settings: AppSettings, allow_web_search:
             web_search_calls=web_search_calls,
         ),
     )
+
+
+async def _download_media_bytes(url: str) -> tuple[bytes, str]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        return response.content, content_type.split(";", 1)[0].strip()
+
+
+async def _image_input_content(media_url: str, media_mimetype: str | None) -> dict[str, Any]:
+    image_bytes, content_type = await _download_media_bytes(media_url)
+    mime_type = media_mimetype or content_type or "image/jpeg"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return {
+        "type": "input_image",
+        "image_url": f"data:{mime_type};base64,{encoded}",
+        "detail": "auto",
+    }
+
+
+def _transcription_upload(audio_bytes: bytes, content_type: str) -> tuple[str, bytes, str]:
+    mime_type = content_type or "audio/ogg"
+    extension = _extension_for_mime_type(mime_type)
+    return (f"voice-note.{extension}", audio_bytes, mime_type)
+
+
+def _extension_for_mime_type(mime_type: str) -> str:
+    if mime_type == "audio/mpeg":
+        return "mp3"
+    if mime_type == "audio/mp4":
+        return "m4a"
+    if mime_type == "audio/wav":
+        return "wav"
+    return "ogg"
 
 
 class FactCheckService:
@@ -202,7 +243,11 @@ class FactCheckService:
             )
 
         transcription_cost = 0.0
-        if message.content_kind.value == "audio" and message.media_url and not message.transcript_text:
+        if (
+            message.content_kind.value == "audio"
+            and message.media_url
+            and not message.transcript_text
+        ):
             transcript, transcription_cost = await self.client.transcribe(message.media_url)
             message.transcript_text = transcript
             message.transcript_sha256 = compute_text_hash(transcript)
@@ -220,7 +265,7 @@ class FactCheckService:
             await self.cache_repo.upsert(
                 claim_key=result.claim_key,
                 result=result,
-                expires_at=datetime.now(timezone.utc) + ttl,
+                expires_at=datetime.now(UTC) + ttl,
             )
         return result
 
@@ -231,4 +276,3 @@ def _ttl_for_verdict(verdict: Verdict) -> timedelta:
     if verdict == Verdict.MISLEADING:
         return timedelta(days=7)
     return timedelta(days=1)
-

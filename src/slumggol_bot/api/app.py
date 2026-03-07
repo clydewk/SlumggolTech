@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from slumggol_bot.config import AppSettings
 from slumggol_bot.db.repositories import GroupRepository, HotClaimRepository
 from slumggol_bot.db.session import create_session_factory
+from slumggol_bot.schemas import AnalysisMode
 from slumggol_bot.services.analytics import (
     ClickHouseAnalyticsQueryService,
     ClickHouseAnalyticsSink,
@@ -16,13 +17,21 @@ from slumggol_bot.services.analytics import (
     NoopAnalyticsQueryService,
     NoopAnalyticsSink,
 )
-from slumggol_bot.services.cache import InMemoryHashObservationStore, RedisHashObservationStore, RedisHotClaimStore
-from slumggol_bot.services.factcheck import FactCheckService, OpenAIFactCheckClient, SourceRegistry
+from slumggol_bot.services.cache import (
+    InMemoryHashObservationStore,
+    RedisHashObservationStore,
+    RedisHotClaimStore,
+)
+from slumggol_bot.services.factcheck import (
+    FactCheckService,
+    OpenAIFactCheckClient,
+    SourceRegistry,
+)
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.outbreak import OutbreakService
 from slumggol_bot.services.pipeline import PipelineOrchestrator
 from slumggol_bot.services.style_profiles import StyleProfileService
-from slumggol_bot.transport.evolution import EvolutionTransport
+from slumggol_bot.transport.telegram import TelegramTransport
 
 
 @lru_cache
@@ -70,20 +79,32 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-@app.post("/webhooks/evolution")
-async def ingest_evolution_webhook(
+@app.post("/webhooks/telegram")
+async def ingest_telegram_webhook(
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    telegram_secret_token: str | None = Header(  # noqa: B008
+        default=None,
+        alias="X-Telegram-Bot-Api-Secret-Token",
+    ),
 ) -> dict[str, int]:
     settings = get_settings()
-    transport = EvolutionTransport(settings)
+    if (
+        settings.telegram_webhook_secret
+        and telegram_secret_token != settings.telegram_webhook_secret
+    ):
+        raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret.")
+
+    transport = TelegramTransport(settings)
     analytics_sink = app.state.analytics_sink
     redis = app.state.redis
     orchestrator = PipelineOrchestrator(
         session=session,
         transport=transport,
         analytics_sink=analytics_sink,
-        hash_observation_store=RedisHashObservationStore(redis) if redis else InMemoryHashObservationStore(),
+        hash_observation_store=(
+            RedisHashObservationStore(redis) if redis else InMemoryHashObservationStore()
+        ),
         hot_claim_store=RedisHotClaimStore(redis),
         candidate_gate=CandidateGate(),
         factcheck_service=FactCheckService(
@@ -102,7 +123,7 @@ async def ingest_evolution_webhook(
 async def set_analysis_mode(
     group_external_id: str,
     analysis_mode: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, str]:
     repository = GroupRepository(session)
     try:
@@ -119,7 +140,7 @@ async def set_analysis_mode(
 @app.post("/admin/groups/{group_external_id}/pause")
 async def pause_group(
     group_external_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, bool]:
     repository = GroupRepository(session)
     group = await repository.set_paused(group_external_id, paused=True)
@@ -130,7 +151,7 @@ async def pause_group(
 @app.post("/admin/groups/{group_external_id}/resume")
 async def resume_group(
     group_external_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, bool]:
     repository = GroupRepository(session)
     group = await repository.set_paused(group_external_id, paused=False)
@@ -145,7 +166,9 @@ async def get_group_metrics(group_external_id: str, hours: int = 24) -> dict:
 
 
 @app.post("/admin/outbreaks/refresh")
-async def refresh_outbreaks(session: AsyncSession = Depends(get_session)) -> dict[str, int]:
+async def refresh_outbreaks(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> dict[str, int]:
     settings = get_settings()
     service = OutbreakService(
         query_service=app.state.analytics_query_service,

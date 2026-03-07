@@ -1,8 +1,8 @@
 # Slumggol Bot
 
-WhatsApp fact-check bot scaffold built around:
+Telegram fact-check bot scaffold built around:
 
-- `Evolution API` for WhatsApp transport
+- `Telegram Bot API` for transport
 - `GPT-5.4` for single-pass candidate fact-checking
 - `gpt-4o-transcribe` for voice notes
 - Postgres for authoritative bot state
@@ -12,8 +12,8 @@ WhatsApp fact-check bot scaffold built around:
 ## Quickstart
 
 1. Copy `.env.example` to `.env`.
-2. Set `EVOLUTION_API_KEY` in `.env` (used by both the bot and local Evolution API).
-3. Start local dependencies (Postgres, Redis, Evolution API):
+2. Set `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and optionally `TELEGRAM_WEBHOOK_SECRET` in `.env`.
+3. Start local dependencies (Postgres and Redis):
 
 ```bash
 docker compose up -d
@@ -37,22 +37,12 @@ uv run alembic upgrade head
 uv run slumggol-api
 ```
 
-7. Create a WhatsApp instance in Evolution API:
+7. Create a Telegram bot with BotFather, disable bot privacy for groups with `/setprivacy`, and add the bot to the target Telegram group or supergroup.
+
+8. Expose the API on a public HTTPS URL, set `PUBLIC_WEBHOOK_URL` in `.env`, then register the webhook:
 
 ```bash
-curl -X POST "http://localhost:8080/instance/create" \
-  -H "apikey: <your-evolution-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"instanceName":"slumggol","integration":"WHATSAPP-BAILEYS","qrcode":true}'
-```
-
-8. Set webhook to this API:
-
-```bash
-curl -X POST "http://localhost:8080/webhook/set/slumggol" \
-  -H "apikey: <your-evolution-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true,"url":"http://host.docker.internal:8000/webhooks/evolution","webhook_by_events":true,"events":["MESSAGES_UPSERT"]}'
+./scripts/set_telegram_webhook.sh
 ```
 
 9. Start the worker:
@@ -66,4 +56,6 @@ uv run slumggol-worker
 - The app is designed to run without ClickHouse in local development. Analytics failures must never block replies.
 - Raw inbound text, image bytes, audio bytes, and transcripts are processed in memory and not persisted.
 - ClickHouse schemas and materialized views live in `sql/clickhouse_bot_analytics.sql`.
-- Scan the QR code from the Evolution API instance status endpoint or manager UI after instance creation.
+- Telegram requires a publicly reachable HTTPS webhook endpoint; local-only `localhost` webhooks will not work.
+- `./scripts/set_telegram_webhook.sh` registers the bot against `${PUBLIC_WEBHOOK_URL}/webhooks/telegram`.
+- `./scripts/debug_telegram.sh` calls `getMe` and `getWebhookInfo` for the configured bot token.

@@ -1,7 +1,7 @@
 [project]
 name = "slumggol-bot"
 version = "0.1.0"
-description = "WhatsApp fact-check bot with GPT-5.4 and ClickHouse analytics."
+description = "Telegram fact-check bot with GPT-5.4 and ClickHouse analytics."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

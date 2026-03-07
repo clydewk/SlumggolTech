@@ -18,6 +18,12 @@ set +a
 : "${EVOLUTION_API_KEY:?EVOLUTION_API_KEY is required}"
 : "${EVOLUTION_INSTANCE:?EVOLUTION_INSTANCE is required}"
 
+number_query=""
+if [[ -n "${WHATSAPP_PAIRING_NUMBER:-}" ]]; then
+  pairing_number="$(printf '%s' "$WHATSAPP_PAIRING_NUMBER" | tr -cd '0-9')"
+  number_query="?number=$pairing_number"
+fi
+
 echo "== Compose Service =="
 docker compose ps evolution-api
 
@@ -41,7 +47,7 @@ echo
 echo
 echo "== Connect Payload =="
 curl -sS -H "apikey: $EVOLUTION_API_KEY" \
-  "$EVOLUTION_BASE_URL/instance/connect/$EVOLUTION_INSTANCE"
+  "$EVOLUTION_BASE_URL/instance/connect/$EVOLUTION_INSTANCE$number_query"
 
 echo
 echo

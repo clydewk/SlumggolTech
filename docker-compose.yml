@@ -27,40 +27,6 @@ services:
     volumes:
       - redis_data:/data
 
-  evolution-api:
-    image: atendai/evolution-api:v2.2.3
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-change-me}
-      SERVER_URL: http://localhost:8080
-      WEBSOCKET_ENABLED: "true"
-      WEBSOCKET_GLOBAL_EVENTS: "true"
-      LOG_LEVEL: ERROR,WARN,DEBUG,INFO,LOG,VERBOSE,WEBHOOKS
-      LOG_COLOR: "false"
-      LOG_BAILEYS: debug
-      CONFIG_SESSION_PHONE_CLIENT: EvolutionAPI
-      CONFIG_SESSION_PHONE_NAME: Chrome
-      NODE_OPTIONS: --dns-result-order=ipv4first
-      DATABASE_ENABLED: "true"
-      DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgresql://postgres:postgres@postgres:5432/slumggol?schema=public
-      DATABASE_CONNECTION_CLIENT_NAME: slumggol_evolution
-      CACHE_REDIS_ENABLED: "true"
-      CACHE_REDIS_URI: redis://redis:6379/1
-      CACHE_REDIS_PREFIX_KEY: slumggol_evolution
-    ports:
-      - "8080:8080"
-    volumes:
-      - evolution_instances:/evolution/instances
-
 volumes:
   postgres_data:
   redis_data:
-  evolution_instances:

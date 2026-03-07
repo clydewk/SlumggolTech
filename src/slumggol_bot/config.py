@@ -21,9 +21,9 @@ class AppSettings(BaseSettings):
     openai_model: str = "gpt-5.4"
     openai_transcribe_model: str = "gpt-4o-transcribe"
 
-    evolution_base_url: str = "http://localhost:8080"
-    evolution_api_key: str = ""
-    evolution_instance: str = "slumggol"
+    telegram_base_url: str = "https://api.telegram.org"
+    telegram_bot_token: str = ""
+    telegram_webhook_secret: str = ""
 
     enable_clickhouse: bool = True
     clickhouse_url: str = ""
@@ -71,4 +71,3 @@ class AppSettings(BaseSettings):
     def estimate_transcription_cost(self, *, seconds: float) -> float:
         minutes = max(seconds / 60.0, 0.0)
         return minutes * self.transcription_cost_per_minute
-

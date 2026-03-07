@@ -2,14 +2,14 @@
 
 ## Purpose
 
-This repository contains a WhatsApp fact-check bot for multilingual Singapore group chats. The bot should remain mostly dormant, detect likely misinformation candidates, run a single GPT-5.4 fact-check call for those candidates, and post a short corrective reply only when confidence and corroboration thresholds are met.
+This repository contains a Telegram fact-check bot for multilingual Singapore group chats. The bot should remain mostly dormant, detect likely misinformation candidates, run a single GPT-5.4 fact-check call for those candidates, and post a short corrective reply only when confidence and corroboration thresholds are met.
 
 ## Architecture Rules
 
 - Postgres is the source of truth for bot state, group configuration, cached fact-check results, and admin controls.
 - Redis is used for background jobs and hot-claim prewarming.
 - ClickHouse Cloud is analytics-only. It is never the source of truth for synchronous bot behavior.
-- `Evolution API` is the WhatsApp transport adapter for this codebase.
+- `Telegram Bot API` is the transport adapter for this codebase.
 - `GPT-5.4` is the only fact-check model in the normal path.
 - `gpt-4o-transcribe` is the only voice-note transcription model in the normal path.
 - Raw inbound content must never be persisted. Only hashes, derived claims, style aggregates, analytics events, bot replies, and usage metrics may be stored.
@@ -30,7 +30,7 @@ This repository contains a WhatsApp fact-check bot for multilingual Singapore gr
 ## Repo Map
 
 - `src/slumggol_bot/api/`: FastAPI application and HTTP routes
-- `src/slumggol_bot/transport/`: WhatsApp transport abstractions and Evolution API adapter
+- `src/slumggol_bot/transport/`: Telegram transport abstractions and adapter
 - `src/slumggol_bot/services/`: bot logic, hashing, analytics, fact-checking, style profile updates, and outbreak logic
 - `src/slumggol_bot/db/`: SQLAlchemy models, sessions, and repositories
 - `src/slumggol_bot/workers/`: ARQ worker entrypoints
@@ -72,7 +72,7 @@ This repository contains a WhatsApp fact-check bot for multilingual Singapore gr
 ## Testing Rules
 
 - Mock OpenAI calls in unit tests.
-- Mock Evolution API calls in unit tests.
+- Mock Telegram Bot API calls in unit tests.
 - Verify that analytics failures do not change the reply path.
 - Verify that hot-claim refresh does not create duplicate live replies.
 - Verify that no raw inbound content is persisted by repository or analytics paths.
