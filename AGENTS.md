@@ -18,6 +18,7 @@ This repository contains a Telegram fact-check bot for multilingual Singapore gr
 ## Operational Rules
 
 - Default `analysis_mode` is `gated`.
+- Default local-development Telegram ingress is `polling`. Webhook plus Cloudflare tunnel is optional.
 - `analysis_mode=all_messages_llm` is demo-only, and must auto-expire after the configured TTL or spend cap.
 - Auto-replies require:
   - verdict in `false`, `misleading`, or `unsupported`
@@ -45,6 +46,7 @@ This repository contains a Telegram fact-check bot for multilingual Singapore gr
 - `docker compose up -d`: start Postgres and Redis locally
 - `uv run alembic upgrade head`: run Postgres migrations
 - `uv run slumggol-api`: start the API
+- `uv run slumggol-poller`: start Telegram polling for local development
 - `uv run slumggol-worker`: start the worker
 - `uv run pytest`: run tests
 - `uv run mypy src`: run static typing checks

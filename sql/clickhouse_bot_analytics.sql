@@ -10,12 +10,15 @@ CREATE TABLE IF NOT EXISTS bot_analytics.message_events (
     forwarded_many_times UInt8,
     content_kind LowCardinality(String),
     text_sha256 Nullable(String),
+    text_simhash Nullable(String),
     media_sha256 Nullable(String),
     image_phash Nullable(String),
     transcript_sha256 Nullable(String),
     language_code String,
     candidate UInt8,
-    reason_codes Array(String)
+    reason_codes Array(String),
+    heuristic_match_type LowCardinality(String),
+    heuristic_match_distance UInt8
 )
 ENGINE = MergeTree
 PARTITION BY toDate(occurred_at)
@@ -46,6 +49,8 @@ CREATE TABLE IF NOT EXISTS bot_analytics.factcheck_events (
     verdict LowCardinality(String),
     confidence Float64,
     cache_hit UInt8,
+    cache_match_type LowCardinality(String),
+    cache_match_distance UInt8,
     needs_reply UInt8,
     reason_codes Array(String),
     source_domains Array(String)

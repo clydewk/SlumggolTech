@@ -18,6 +18,11 @@ class ContentKind(StrEnum):
     AUDIO = "audio"
 
 
+class FingerprintMatchType(StrEnum):
+    EXACT = "exact"
+    SIMHASH = "simhash"
+
+
 class Verdict(StrEnum):
     FALSE = "false"
     MISLEADING = "misleading"
@@ -43,6 +48,7 @@ class NormalizedMessage(BaseModel):
     occurred_at: datetime
     group_id: str
     message_id: str
+    transport_message_id: int | None = None
     sender_id: str
     content_kind: ContentKind
     command_name: str | None = None
@@ -57,6 +63,7 @@ class NormalizedMessage(BaseModel):
     media_duration_seconds: float | None = None
     detected_languages: list[str] = Field(default_factory=list)
     text_sha256: str | None = None
+    text_simhash: str | None = None
     media_sha256: str | None = None
     image_phash: str | None = None
     transcript_sha256: str | None = None
@@ -97,12 +104,16 @@ class HashObservation(BaseModel):
     hash_key: str
     cross_group_count: int = 0
     same_group_count: int = 0
+    match_type: FingerprintMatchType = FingerprintMatchType.EXACT
+    distance: int | None = None
 
 
 class CandidateDecision(BaseModel):
     candidate: bool
     reason_codes: list[str] = Field(default_factory=list)
     hash_observations: list[HashObservation] = Field(default_factory=list)
+    match_type: FingerprintMatchType | None = None
+    match_distance: int | None = None
 
 
 class EvidenceSource(BaseModel):
@@ -126,20 +137,30 @@ class FactCheckResult(BaseModel):
     verdict: Verdict
     confidence: float
     canonical_claim_en: str
+    canonical_text_simhash: str | None = None
     reply_language: str
     reply_text: str
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
     usage: ModelUsage = Field(default_factory=ModelUsage)
     cache_hit: bool = False
+    cache_match_type: str | None = None
+    cache_match_distance: int | None = None
     claim_key: str | None = None
 
 
 class HotClaim(BaseModel):
     hash_key: str
     claim_key: str | None = None
+    text_simhash: str | None = None
     reason: str
     score: float
+
+
+class HotClaimMatch(BaseModel):
+    claim_key: str
+    match_type: FingerprintMatchType
+    distance: int = 0
 
 
 class AnalyticsEvent(BaseModel):

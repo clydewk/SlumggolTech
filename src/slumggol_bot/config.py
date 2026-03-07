@@ -24,6 +24,10 @@ class AppSettings(BaseSettings):
     telegram_base_url: str = "https://api.telegram.org"
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
+    telegram_ingest_mode: str = "polling"
+    telegram_poll_timeout_seconds: int = 20
+    telegram_poll_interval_seconds: float = 1.0
+    telegram_poll_limit: int = 50
 
     enable_clickhouse: bool = True
     clickhouse_url: str = ""
@@ -38,6 +42,7 @@ class AppSettings(BaseSettings):
     demo_mode_ttl_minutes: int = 120
     hot_claim_min_groups: int = 2
     hot_claim_lookback_minutes: int = 60
+    text_simhash_max_distance: int = 3
 
     reply_confidence_threshold: float = 0.82
     min_sources_required: int = 2

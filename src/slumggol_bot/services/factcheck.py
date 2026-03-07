@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
-import yaml
+import yaml  # type: ignore[import-untyped]
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -21,7 +21,7 @@ from slumggol_bot.schemas import (
     Verdict,
 )
 from slumggol_bot.services.cache import HotClaimStore
-from slumggol_bot.services.hashing import compute_text_hash
+from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 logger = logging.getLogger(__name__)
@@ -114,10 +114,25 @@ class OpenAIFactCheckClient:
         if message.content_kind.value == "image" and message.media_url:
             content.append(await _image_input_content(message.media_url, message.media_mimetype))
         tools = [{"type": "web_search_preview"}] if allow_web_search else []
+        responses_api: Any = self.client.responses
         response = None
         parsed_payload = None
         for attempt, max_output_tokens in enumerate(_FACTCHECK_OUTPUT_TOKEN_BUDGETS, start=1):
-            response = await self.client.responses.create(
+            logger.info(
+                (
+                    "Calling OpenAI factcheck group_id=%s message_id=%s model=%s "
+                    "attempt=%s max_output_tokens=%s has_text=%s has_image=%s web_search=%s"
+                ),
+                message.group_id,
+                message.message_id,
+                self.settings.openai_model,
+                attempt,
+                max_output_tokens,
+                bool(message.primary_text),
+                message.content_kind.value == "image" and bool(message.media_url),
+                allow_web_search,
+            )
+            response = await responses_api.create(
                 model=self.settings.openai_model,
                 reasoning={"effort": "low"},
                 text={
@@ -186,6 +201,7 @@ class OpenAIFactCheckClient:
             verdict=parsed_payload.verdict,
             confidence=parsed_payload.confidence,
             canonical_claim_en=parsed_payload.canonical_claim_en,
+            canonical_text_simhash=compute_text_simhash(parsed_payload.canonical_claim_en),
             reply_language=parsed_payload.reply_language,
             reply_text=parsed_payload.reply_text,
             reason_codes=parsed_payload.reason_codes,
@@ -356,12 +372,14 @@ class FactCheckService:
         cache_repo: ClaimCacheProtocol,
         hot_claim_store: HotClaimStore,
         style_profile_service: StyleProfileService,
+        text_simhash_max_distance: int,
     ) -> None:
         self.client = client
         self.registry = registry
         self.cache_repo = cache_repo
         self.hot_claim_store = hot_claim_store
         self.style_profile_service = style_profile_service
+        self.text_simhash_max_distance = text_simhash_max_distance
 
     async def assess_candidate(
         self,
@@ -369,24 +387,9 @@ class FactCheckService:
         message: NormalizedMessage,
         style_profile: GroupStyleProfile,
     ) -> FactCheckResult:
-        for hash_value in message.available_hashes():
-            claim_key = await self.hot_claim_store.claim_key_for_hash(hash_value)
-            if not claim_key:
-                continue
-            cached = await self.cache_repo.get(claim_key)
-            if cached is None:
-                continue
-            return FactCheckResult(
-                needs_reply=cached.verdict in {"false", "misleading", "unsupported"},
-                verdict=Verdict(cached.verdict),
-                confidence=float(cached.confidence),
-                canonical_claim_en="",
-                reply_language=cached.reply_language,
-                reply_text=cached.reply_template,
-                evidence=[EvidenceSource.model_validate(item) for item in cached.evidence_json],
-                cache_hit=True,
-                claim_key=claim_key,
-            )
+        cached_result = await self._cached_result_for_message(message)
+        if cached_result is not None:
+            return cached_result
 
         transcription_cost = 0.0
         if (
@@ -397,7 +400,18 @@ class FactCheckService:
             transcript, transcription_cost = await self.client.transcribe(message.media_url)
             message.transcript_text = transcript
             message.transcript_sha256 = compute_text_hash(transcript)
+            if message.text_simhash is None:
+                message.text_simhash = compute_text_simhash(transcript)
+            cached_result = await self._cached_result_for_message(message)
+            if cached_result is not None:
+                cached_result.usage.transcription_cost_usd = transcription_cost
+                return cached_result
 
+        logger.info(
+            "Cache lookup exhausted; sending to OpenAI group_id=%s message_id=%s",
+            message.group_id,
+            message.message_id,
+        )
         result = await self.client.fact_check(
             message=message,
             style_profile=style_profile,
@@ -415,6 +429,108 @@ class FactCheckService:
             )
         return result
 
+    async def _cached_result_for_message(
+        self,
+        message: NormalizedMessage,
+    ) -> FactCheckResult | None:
+        for hash_value in message.available_hashes():
+            logger.info(
+                "Checking exact hot cache group_id=%s message_id=%s hash_key=%s",
+                message.group_id,
+                message.message_id,
+                hash_value,
+            )
+            claim_key = await self.hot_claim_store.claim_key_for_hash(hash_value)
+            if not claim_key:
+                logger.info(
+                    "Exact hot cache miss group_id=%s message_id=%s hash_key=%s",
+                    message.group_id,
+                    message.message_id,
+                    hash_value,
+                )
+                continue
+            logger.info(
+                "Exact hot cache candidate group_id=%s message_id=%s hash_key=%s claim_key=%s",
+                message.group_id,
+                message.message_id,
+                hash_value,
+                claim_key,
+            )
+            cached = await self.cache_repo.get(claim_key)
+            if cached is None:
+                logger.info(
+                    "Exact hot cache stale group_id=%s message_id=%s claim_key=%s",
+                    message.group_id,
+                    message.message_id,
+                    claim_key,
+                )
+                continue
+            logger.info(
+                "Exact hot cache hit group_id=%s message_id=%s claim_key=%s",
+                message.group_id,
+                message.message_id,
+                claim_key,
+            )
+            return _cached_factcheck_result(
+                cached,
+                claim_key=claim_key,
+                cache_match_type="exact_hot",
+                cache_match_distance=0,
+            )
+
+        logger.info(
+            "Checking SimHash hot cache group_id=%s message_id=%s text_simhash=%s threshold=%s",
+            message.group_id,
+            message.message_id,
+            message.text_simhash or "-",
+            self.text_simhash_max_distance,
+        )
+        simhash_match = await self.hot_claim_store.simhash_match(
+            message.text_simhash,
+            self.text_simhash_max_distance,
+        )
+        if simhash_match is None:
+            logger.info(
+                "SimHash hot cache miss group_id=%s message_id=%s text_simhash=%s",
+                message.group_id,
+                message.message_id,
+                message.text_simhash or "-",
+            )
+            return None
+        logger.info(
+            (
+                "SimHash hot cache candidate group_id=%s message_id=%s claim_key=%s "
+                "distance=%s match_type=%s"
+            ),
+            message.group_id,
+            message.message_id,
+            simhash_match.claim_key,
+            simhash_match.distance,
+            simhash_match.match_type.value,
+        )
+        cached = await self.cache_repo.get(simhash_match.claim_key)
+        if cached is None:
+            logger.info(
+                "SimHash hot cache stale group_id=%s message_id=%s claim_key=%s",
+                message.group_id,
+                message.message_id,
+                simhash_match.claim_key,
+            )
+            return None
+        logger.info(
+            "SimHash hot cache hit group_id=%s message_id=%s claim_key=%s distance=%s",
+            message.group_id,
+            message.message_id,
+            simhash_match.claim_key,
+            simhash_match.distance,
+        )
+        return _cached_factcheck_result(
+            cached,
+            claim_key=simhash_match.claim_key,
+            cache_match_type="simhash_hot",
+            cache_match_distance=simhash_match.distance,
+        )
+
 
 def _ttl_for_verdict(verdict: Verdict) -> timedelta:
     if verdict == Verdict.FALSE:
@@ -422,3 +538,26 @@ def _ttl_for_verdict(verdict: Verdict) -> timedelta:
     if verdict == Verdict.MISLEADING:
         return timedelta(days=7)
     return timedelta(days=1)
+
+
+def _cached_factcheck_result(
+    cached: Any,
+    *,
+    claim_key: str,
+    cache_match_type: str,
+    cache_match_distance: int,
+) -> FactCheckResult:
+    return FactCheckResult(
+        needs_reply=cached.verdict in {"false", "misleading", "unsupported"},
+        verdict=Verdict(cached.verdict),
+        confidence=float(cached.confidence),
+        canonical_claim_en="",
+        canonical_text_simhash=cached.canonical_text_simhash,
+        reply_language=cached.reply_language,
+        reply_text=cached.reply_template,
+        evidence=[EvidenceSource.model_validate(item) for item in cached.evidence_json],
+        cache_hit=True,
+        cache_match_type=cache_match_type,
+        cache_match_distance=cache_match_distance,
+        claim_key=claim_key,
+    )

@@ -19,6 +19,7 @@ from slumggol_bot.schemas import (
 )
 from slumggol_bot.services.cache import InMemoryHotClaimStore
 from slumggol_bot.services.factcheck import FactCheckService, OpenAIFactCheckClient
+from slumggol_bot.services.hashing import compute_text_simhash
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 
@@ -36,6 +37,7 @@ class FakeCacheRepo:
             {
                 "verdict": result.verdict.value,
                 "confidence": result.confidence,
+                "canonical_text_simhash": result.canonical_text_simhash,
                 "reply_language": result.reply_language,
                 "reply_template": result.reply_text,
                 "evidence_json": [item.model_dump(mode="json") for item in result.evidence],
@@ -114,6 +116,7 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
         verdict=Verdict.FALSE,
         confidence=0.91,
         canonical_claim_en="canonical claim",
+        canonical_text_simhash=compute_text_simhash("canonical claim"),
         reply_language="English",
         reply_text="Cached correction",
         evidence=[EvidenceSource(title="Gov", url="https://gov.sg", domain="gov.sg")],
@@ -138,6 +141,7 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
         cache_repo=cache,
         hot_claim_store=hot_store,
         style_profile_service=StyleProfileService(),
+        text_simhash_max_distance=3,
     )
 
     result = await service.assess_candidate(
@@ -156,6 +160,200 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
     assert result.cache_hit is True
     assert client.calls == 0
     assert result.reply_text == "Cached correction"
+    assert result.cache_match_type == "exact_hot"
+
+
+@pytest.mark.asyncio
+async def test_factcheck_service_returns_simhash_hot_claim_without_model_call() -> None:
+    cache = FakeCacheRepo()
+    canonical_text = "moh dengue alert dengue alert"
+    cached_result = FactCheckResult(
+        needs_reply=True,
+        verdict=Verdict.FALSE,
+        confidence=0.91,
+        canonical_claim_en=canonical_text,
+        canonical_text_simhash=compute_text_simhash(canonical_text),
+        reply_language="English",
+        reply_text="Cached correction",
+        evidence=[EvidenceSource(title="Gov", url="https://gov.sg", domain="gov.sg")],
+        usage=ModelUsage(),
+        claim_key="claim-key-1",
+    )
+    await cache.upsert(
+        claim_key="claim-key-1",
+        result=cached_result,
+        expires_at=datetime.now(UTC),
+    )
+
+    hot_store = InMemoryHotClaimStore()
+    await hot_store.replace(
+        [
+            HotClaim(
+                hash_key="claim-key-1",
+                claim_key="claim-key-1",
+                text_simhash=cached_result.canonical_text_simhash,
+                reason="hot",
+                score=3,
+            )
+        ],
+        60,
+    )
+    client = FakeClient()
+    service = FactCheckService(
+        client=client,
+        registry=FakeRegistry(),
+        cache_repo=cache,
+        hot_claim_store=hot_store,
+        style_profile_service=StyleProfileService(),
+        text_simhash_max_distance=3,
+    )
+
+    result = await service.assess_candidate(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="group-1",
+            message_id="message-1",
+            sender_id="sender-1",
+            content_kind=ContentKind.TEXT,
+            text="moh dengue alert dengue alert alert",
+            text_sha256="miss-hash",
+            text_simhash=cached_result.canonical_text_simhash,
+        ),
+        style_profile=GroupStyleProfile(),
+    )
+
+    assert result.cache_hit is True
+    assert result.cache_match_type == "simhash_hot"
+    assert result.cache_match_distance is not None
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_factcheck_service_prefers_exact_hot_cache_over_simhash_match() -> None:
+    cache = FakeCacheRepo()
+    exact_result = FactCheckResult(
+        needs_reply=True,
+        verdict=Verdict.FALSE,
+        confidence=0.97,
+        canonical_claim_en="exact claim",
+        canonical_text_simhash=compute_text_simhash("exact claim"),
+        reply_language="English",
+        reply_text="Exact correction",
+        evidence=[EvidenceSource(title="Gov", url="https://gov.sg", domain="gov.sg")],
+        usage=ModelUsage(),
+        claim_key="exact-claim-key",
+    )
+    similar_result = FactCheckResult(
+        needs_reply=True,
+        verdict=Verdict.FALSE,
+        confidence=0.88,
+        canonical_claim_en="similar claim",
+        canonical_text_simhash=compute_text_simhash("similar claim"),
+        reply_language="English",
+        reply_text="SimHash correction",
+        evidence=[EvidenceSource(title="Gov", url="https://gov.sg", domain="gov.sg")],
+        usage=ModelUsage(),
+        claim_key="similar-claim-key",
+    )
+    await cache.upsert(
+        claim_key="exact-claim-key",
+        result=exact_result,
+        expires_at=datetime.now(UTC),
+    )
+    await cache.upsert(
+        claim_key="similar-claim-key",
+        result=similar_result,
+        expires_at=datetime.now(UTC),
+    )
+
+    hot_store = InMemoryHotClaimStore()
+    await hot_store.replace(
+        [
+            HotClaim(
+                hash_key="exact-text-hash",
+                claim_key="exact-claim-key",
+                text_simhash=exact_result.canonical_text_simhash,
+                reason="hot",
+                score=5,
+            ),
+            HotClaim(
+                hash_key="similar-claim-key",
+                claim_key="similar-claim-key",
+                text_simhash=similar_result.canonical_text_simhash,
+                reason="hot",
+                score=3,
+            ),
+        ],
+        60,
+    )
+    client = FakeClient()
+    service = FactCheckService(
+        client=client,
+        registry=FakeRegistry(),
+        cache_repo=cache,
+        hot_claim_store=hot_store,
+        style_profile_service=StyleProfileService(),
+        text_simhash_max_distance=3,
+    )
+
+    result = await service.assess_candidate(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="group-1",
+            message_id="message-1",
+            sender_id="sender-1",
+            content_kind=ContentKind.TEXT,
+            text="exact claim",
+            text_sha256="exact-text-hash",
+            text_simhash=compute_text_simhash("exact claim"),
+        ),
+        style_profile=GroupStyleProfile(),
+    )
+
+    assert result.reply_text == "Exact correction"
+    assert result.cache_match_type == "exact_hot"
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_audio_candidate_sets_text_simhash_only_after_transcription() -> None:
+    class CapturingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_text_simhash: str | None = None
+
+        async def fact_check(self, **kwargs):  # noqa: ANN003
+            message = kwargs["message"]
+            self.seen_text_simhash = message.text_simhash
+            return await super().fact_check(**kwargs)
+
+    client = CapturingClient()
+    service = FactCheckService(
+        client=client,
+        registry=FakeRegistry(),
+        cache_repo=FakeCacheRepo(),
+        hot_claim_store=InMemoryHotClaimStore(),
+        style_profile_service=StyleProfileService(),
+        text_simhash_max_distance=3,
+    )
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="group-1",
+        message_id="message-1",
+        sender_id="sender-1",
+        content_kind=ContentKind.AUDIO,
+        media_url="https://example.test/audio.ogg",
+    )
+
+    assert message.text_simhash is None
+
+    await service.assess_candidate(
+        message=message,
+        style_profile=GroupStyleProfile(),
+    )
+
+    assert message.transcript_text == "transcript"
+    assert client.seen_text_simhash == compute_text_simhash("transcript")
 
 
 @pytest.mark.asyncio

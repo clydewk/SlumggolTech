@@ -9,7 +9,7 @@ import httpx
 
 from slumggol_bot.config import AppSettings
 from slumggol_bot.schemas import ContentKind, NormalizedMessage
-from slumggol_bot.services.hashing import compute_text_hash
+from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 
 _FACTCHECK_COMMAND_RE = re.compile(
     r"^/factcheck(?:@[A-Za-z0-9_]+)?(?:\s+(?P<args>.*))?$",
@@ -27,6 +27,9 @@ class TelegramTransport:
         )
 
     async def normalize_webhook(self, payload: dict[str, Any]) -> list[NormalizedMessage]:
+        return await self.normalize_update(payload)
+
+    async def normalize_update(self, payload: dict[str, Any]) -> list[NormalizedMessage]:
         message = self._extract_message(payload)
         if message is None:
             logger.info("Ignoring Telegram update without message payload")
@@ -53,24 +56,75 @@ class TelegramTransport:
         )
         return [normalized]
 
-    async def send_group_message(self, group_id: str, reply_text: str) -> None:
+    async def fetch_updates(
+        self,
+        *,
+        offset: int | None,
+        timeout_seconds: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.telegram_bot_token:
+            return []
+        payload: dict[str, Any] = {
+            "timeout": timeout_seconds,
+            "limit": limit,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+        response = await self.client.post(
+            self._api_path("getUpdates"),
+            json=payload,
+            timeout=max(float(timeout_seconds) + 5.0, 15.0),
+        )
+        response.raise_for_status()
+        raw_result = response.json().get("result", [])
+        return [item for item in raw_result if isinstance(item, dict)]
+
+    async def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+        if not self.settings.telegram_bot_token:
+            return
+        response = await self.client.post(
+            self._api_path("deleteWebhook"),
+            json={"drop_pending_updates": drop_pending_updates},
+        )
+        response.raise_for_status()
+
+    async def send_group_message(
+        self,
+        group_id: str,
+        reply_text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> None:
         if not self.settings.telegram_bot_token:
             return
 
+        payload: dict[str, Any] = {
+            "chat_id": group_id,
+            "text": reply_text,
+            "disable_web_page_preview": True,
+        }
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+
         response = await self.client.post(
             self._api_path("sendMessage"),
-            json={
-                "chat_id": group_id,
-                "text": reply_text,
-                "disable_web_page_preview": True,
-            },
+            json=payload,
         )
         response.raise_for_status()
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
 
     async def _normalize_message(self, message: dict[str, Any]) -> NormalizedMessage:
         chat = message.get("chat", {})
         group_id = str(chat.get("id", "unknown-group"))
-        raw_message_id = str(message.get("message_id", "unknown"))
+        raw_message_id_value = message.get("message_id")
+        raw_message_id = str(
+            raw_message_id_value if raw_message_id_value is not None else "unknown"
+        )
+        transport_message_id = self._parse_message_id(raw_message_id_value)
         message_id = f"{group_id}:{raw_message_id}"
 
         sender = message.get("from") or message.get("sender_chat") or {}
@@ -110,6 +164,7 @@ class TelegramTransport:
             occurred_at=occurred_at,
             group_id=group_id,
             message_id=message_id,
+            transport_message_id=transport_message_id,
             sender_id=sender_id,
             content_kind=content_kind,
             command_name=command_name,
@@ -126,6 +181,9 @@ class TelegramTransport:
             media_duration_seconds=media_duration_seconds,
             detected_languages=[],
             text_sha256=compute_text_hash(normalized_text or quoted_text or caption or hash_input),
+            text_simhash=compute_text_simhash(
+                normalized_text or quoted_text or caption or hash_input
+            ),
         )
 
     def _extract_message(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -226,6 +284,15 @@ class TelegramTransport:
         if match is None:
             return None, ""
         return "factcheck", (match.group("args") or "").strip()
+
+    def _parse_message_id(self, value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit():
+                return int(stripped)
+        return None
 
 
 class AudioPayload(TypedDict):

@@ -52,13 +52,19 @@ class FakeGroupRepo:
 class FakeTransport:
     def __init__(self, messages: list[NormalizedMessage]) -> None:
         self.messages = messages
-        self.sent_messages: list[tuple[str, str]] = []
+        self.sent_messages: list[tuple[str, str, int | None]] = []
 
     async def normalize_webhook(self, payload: dict) -> list[NormalizedMessage]:  # noqa: ARG002
         return self.messages
 
-    async def send_group_message(self, group_id: str, reply_text: str) -> None:
-        self.sent_messages.append((group_id, reply_text))
+    async def send_group_message(
+        self,
+        group_id: str,
+        reply_text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> None:
+        self.sent_messages.append((group_id, reply_text, reply_to_message_id))
 
 
 class FakeAnalyticsSink:
@@ -71,11 +77,19 @@ class FakeHashObservationStore:
         return []
 
 
+class FakeTextSimHashObservationStore:
+    async def record(self, text_simhash: str | None, group_id: str):  # noqa: ANN001, ARG002
+        return None
+
+
 class FakeHotClaimStore:
     async def contains_hash(self, hash_key: str) -> bool:  # noqa: ARG002
         return False
 
     async def claim_key_for_hash(self, hash_key: str) -> str | None:  # noqa: ARG002
+        return None
+
+    async def simhash_match(self, text_simhash: str | None, max_distance: int):  # noqa: ANN001, ARG002
         return None
 
     async def replace(self, claims, ttl_seconds: int) -> None:  # noqa: ANN001, ARG002
@@ -125,6 +139,7 @@ async def test_factcheck_command_returns_user_visible_error_on_auth_failure() ->
         transport=transport,
         analytics_sink=FakeAnalyticsSink(),
         hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
         hot_claim_store=FakeHotClaimStore(),
         candidate_gate=FakeCandidateGate(),
         factcheck_service=ExplodingFactCheckService(),

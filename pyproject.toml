@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 slumggol-api = "slumggol_bot.main:run"
+slumggol-poller = "slumggol_bot.polling:run"
 slumggol-worker = "slumggol_bot.workers.settings:run_worker"
 
 [tool.pytest.ini_options]

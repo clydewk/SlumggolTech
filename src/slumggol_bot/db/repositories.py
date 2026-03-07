@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,9 +52,9 @@ class ClaimCacheRepository:
         entry = await self.session.get(ClaimCacheEntry, claim_key)
         if entry is None:
             return None
-        if entry.expires_at <= datetime.now(timezone.utc):
+        if entry.expires_at <= datetime.now(UTC):
             return None
-        entry.last_used_at = datetime.now(timezone.utc)
+        entry.last_used_at = datetime.now(UTC)
         await self.session.flush()
         return entry
 
@@ -69,6 +69,7 @@ class ClaimCacheRepository:
         if entry is None:
             entry = ClaimCacheEntry(
                 claim_key=claim_key,
+                canonical_text_simhash=result.canonical_text_simhash,
                 verdict=result.verdict.value,
                 confidence=result.confidence,
                 reply_language=result.reply_language,
@@ -79,6 +80,7 @@ class ClaimCacheRepository:
             )
             self.session.add(entry)
         else:
+            entry.canonical_text_simhash = result.canonical_text_simhash
             entry.verdict = result.verdict.value
             entry.confidence = result.confidence
             entry.reply_language = result.reply_language
@@ -86,8 +88,23 @@ class ClaimCacheRepository:
             entry.evidence_json = [item.model_dump(mode="json") for item in result.evidence]
             entry.source_quality_score = float(len(result.evidence))
             entry.expires_at = expires_at
-            entry.last_used_at = datetime.now(timezone.utc)
+            entry.last_used_at = datetime.now(UTC)
         await self.session.flush()
+
+    async def text_simhashes_for_claim_keys(self, claim_keys: Iterable[str]) -> dict[str, str]:
+        keys = list(dict.fromkeys(claim_keys))
+        if not keys:
+            return {}
+        result = await self.session.execute(
+            select(ClaimCacheEntry.claim_key, ClaimCacheEntry.canonical_text_simhash).where(
+                ClaimCacheEntry.claim_key.in_(keys)
+            )
+        )
+        return {
+            claim_key: text_simhash
+            for claim_key, text_simhash in result.all()
+            if text_simhash
+        }
 
 
 class HotClaimRepository:
@@ -101,6 +118,7 @@ class HotClaimRepository:
                 HotClaimEntry(
                     hash_key=claim.hash_key,
                     claim_key=claim.claim_key,
+                    text_simhash=claim.text_simhash,
                     reason=claim.reason,
                     score=claim.score,
                     expires_at=expires_at,

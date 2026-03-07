@@ -17,10 +17,14 @@ from slumggol_bot.schemas import (
     Verdict,
 )
 from slumggol_bot.services.analytics import AnalyticsSink
-from slumggol_bot.services.cache import HashObservationStore, HotClaimStore
+from slumggol_bot.services.cache import (
+    HashObservationStore,
+    HotClaimStore,
+    TextSimHashObservationStore,
+)
 from slumggol_bot.services.factcheck import FactCheckService
 from slumggol_bot.services.gating import CandidateGate
-from slumggol_bot.services.hashing import compute_text_hash
+from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.style_profiles import StyleProfileService
 from slumggol_bot.transport.base import TransportAdapter
 
@@ -35,6 +39,7 @@ class PipelineOrchestrator:
         transport: TransportAdapter,
         analytics_sink: AnalyticsSink,
         hash_observation_store: HashObservationStore,
+        text_simhash_observation_store: TextSimHashObservationStore,
         hot_claim_store: HotClaimStore,
         candidate_gate: CandidateGate,
         factcheck_service: FactCheckService,
@@ -44,6 +49,7 @@ class PipelineOrchestrator:
         self.transport = transport
         self.analytics_sink = analytics_sink
         self.hash_observation_store = hash_observation_store
+        self.text_simhash_observation_store = text_simhash_observation_store
         self.hot_claim_store = hot_claim_store
         self.candidate_gate = candidate_gate
         self.factcheck_service = factcheck_service
@@ -76,23 +82,42 @@ class PipelineOrchestrator:
             message.available_hashes(),
             group_id=message.group_id,
         )
+        simhash_observation = await self.text_simhash_observation_store.record(
+            message.text_simhash,
+            group_id=message.group_id,
+        )
         is_hot_hash = False
         for hash_key in message.available_hashes():
             if await self.hot_claim_store.contains_hash(hash_key):
                 is_hot_hash = True
                 break
+        logger.info(
+            (
+                "Heuristic inputs group_id=%s message_id=%s exact_hashes=%s hot_exact=%s "
+                "text_simhash=%s simhash_cross_group=%s simhash_same_group=%s simhash_distance=%s"
+            ),
+            message.group_id,
+            message.message_id,
+            len(hash_observations),
+            is_hot_hash,
+            message.text_simhash or "-",
+            simhash_observation.cross_group_count if simhash_observation else 0,
+            simhash_observation.same_group_count if simhash_observation else 0,
+            simhash_observation.distance if simhash_observation else None,
+        )
         decision = explicit_command_decision(message)
         if decision is None:
             decision = self.candidate_gate.decide(
                 message=message,
                 analysis_mode=AnalysisMode(group.analysis_mode),
                 hash_observations=hash_observations,
+                simhash_observation=simhash_observation,
                 is_hot_hash=is_hot_hash,
             )
         logger.info(
             (
                 "Decision group_id=%s message_id=%s command=%s candidate=%s "
-                "reason_codes=%s paused=%s"
+                "reason_codes=%s paused=%s match_type=%s match_distance=%s"
             ),
             message.group_id,
             message.message_id,
@@ -100,6 +125,8 @@ class PipelineOrchestrator:
             decision.candidate,
             ",".join(decision.reason_codes),
             group.paused,
+            decision.match_type.value if decision.match_type else "-",
+            decision.match_distance,
         )
         await self.analytics_sink.write([message_event(message, decision)])
 
@@ -154,7 +181,11 @@ class PipelineOrchestrator:
                 result.verdict.value,
                 result.confidence,
             )
-            await self.transport.send_group_message(message.group_id, result.reply_text)
+            await self.transport.send_group_message(
+                message.group_id,
+                result.reply_text,
+                reply_to_message_id=message.transport_message_id,
+            )
             await self.analytics_sink.write([reply_event(message, result)])
 
         await self.session.commit()
@@ -219,6 +250,7 @@ def message_for_assessment(message: NormalizedMessage) -> NormalizedMessage | No
             "quoted_text": "",
             "caption": "",
             "text_sha256": compute_text_hash(target_text),
+            "text_simhash": compute_text_simhash(target_text),
         }
     )
 
@@ -280,12 +312,15 @@ def message_event(message: NormalizedMessage, decision: CandidateDecision) -> An
             "forwarded_many_times": int(message.forwarded_many_times),
             "content_kind": message.content_kind.value,
             "text_sha256": message.text_sha256,
+            "text_simhash": message.text_simhash,
             "media_sha256": message.media_sha256,
             "image_phash": message.image_phash,
             "transcript_sha256": message.transcript_sha256,
             "language_code": ",".join(message.detected_languages),
             "candidate": int(decision.candidate),
             "reason_codes": decision.reason_codes,
+            "heuristic_match_type": decision.match_type.value if decision.match_type else "",
+            "heuristic_match_distance": decision.match_distance or 0,
         },
     )
 
@@ -318,6 +353,8 @@ def factcheck_event(message: NormalizedMessage, result: FactCheckResult) -> Anal
             "verdict": result.verdict.value,
             "confidence": result.confidence,
             "cache_hit": int(result.cache_hit),
+            "cache_match_type": result.cache_match_type or "",
+            "cache_match_distance": result.cache_match_distance or 0,
             "needs_reply": int(result.needs_reply),
             "reason_codes": result.reason_codes,
             "source_domains": [source.domain for source in result.evidence],

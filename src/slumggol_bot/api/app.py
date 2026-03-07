@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from datetime import datetime
 from functools import lru_cache
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -7,9 +9,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from slumggol_bot.config import AppSettings
-from slumggol_bot.db.repositories import GroupRepository, HotClaimRepository
+from slumggol_bot.db.models import ClaimCacheEntry
+from slumggol_bot.db.repositories import ClaimCacheRepository, GroupRepository, HotClaimRepository
 from slumggol_bot.db.session import create_session_factory
-from slumggol_bot.schemas import AnalysisMode
+from slumggol_bot.schemas import AnalysisMode, FactCheckResult
 from slumggol_bot.services.analytics import (
     ClickHouseAnalyticsQueryService,
     ClickHouseAnalyticsSink,
@@ -19,8 +22,10 @@ from slumggol_bot.services.analytics import (
 )
 from slumggol_bot.services.cache import (
     InMemoryHashObservationStore,
+    InMemoryTextSimHashObservationStore,
     RedisHashObservationStore,
     RedisHotClaimStore,
+    RedisTextSimHashObservationStore,
 )
 from slumggol_bot.services.factcheck import (
     FactCheckService,
@@ -31,6 +36,7 @@ from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.outbreak import OutbreakService
 from slumggol_bot.services.pipeline import PipelineOrchestrator
 from slumggol_bot.services.style_profiles import StyleProfileService
+from slumggol_bot.transport.base import TransportAdapter
 from slumggol_bot.transport.telegram import TelegramTransport
 
 
@@ -58,10 +64,63 @@ def _build_analytics(settings: AppSettings):
     return NoopAnalyticsSink(), NoopAnalyticsQueryService()
 
 
-async def get_session() -> AsyncSession:
+async def get_session() -> AsyncIterator[AsyncSession]:
     session_factory = get_session_factory()
     async with session_factory() as session:
         yield session
+
+
+def build_transport(settings: AppSettings | None = None) -> TelegramTransport:
+    return TelegramTransport(settings or get_settings())
+
+
+def build_hot_claim_store(
+    settings: AppSettings | None = None,
+    redis: Redis | None = None,
+) -> RedisHotClaimStore:
+    resolved_settings = settings or get_settings()
+    return RedisHotClaimStore(
+        redis or get_redis(),
+        max_distance=resolved_settings.text_simhash_max_distance,
+    )
+
+
+def build_pipeline_orchestrator(
+    session: AsyncSession,
+    *,
+    transport: TransportAdapter | None = None,
+) -> PipelineOrchestrator:
+    settings = get_settings()
+    redis = app.state.redis
+    resolved_transport = transport or build_transport(settings)
+    hot_claim_store = build_hot_claim_store(settings, redis)
+    return PipelineOrchestrator(
+        session=session,
+        transport=resolved_transport,
+        analytics_sink=app.state.analytics_sink,
+        hash_observation_store=(
+            RedisHashObservationStore(redis) if redis else InMemoryHashObservationStore()
+        ),
+        text_simhash_observation_store=(
+            RedisTextSimHashObservationStore(
+                redis,
+                max_distance=settings.text_simhash_max_distance,
+            )
+            if redis
+            else InMemoryTextSimHashObservationStore(settings.text_simhash_max_distance)
+        ),
+        hot_claim_store=hot_claim_store,
+        candidate_gate=CandidateGate(),
+        factcheck_service=FactCheckService(
+            client=OpenAIFactCheckClient(settings),
+            registry=SourceRegistry(settings.registry_path),
+            cache_repo=GrouplessClaimCacheRepository(session),
+            hot_claim_store=hot_claim_store,
+            style_profile_service=StyleProfileService(),
+            text_simhash_max_distance=settings.text_simhash_max_distance,
+        ),
+        style_profile_service=StyleProfileService(),
+    )
 
 
 def create_app() -> FastAPI:
@@ -95,27 +154,7 @@ async def ingest_telegram_webhook(
     ):
         raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret.")
 
-    transport = TelegramTransport(settings)
-    analytics_sink = app.state.analytics_sink
-    redis = app.state.redis
-    orchestrator = PipelineOrchestrator(
-        session=session,
-        transport=transport,
-        analytics_sink=analytics_sink,
-        hash_observation_store=(
-            RedisHashObservationStore(redis) if redis else InMemoryHashObservationStore()
-        ),
-        hot_claim_store=RedisHotClaimStore(redis),
-        candidate_gate=CandidateGate(),
-        factcheck_service=FactCheckService(
-            client=OpenAIFactCheckClient(settings),
-            registry=SourceRegistry(settings.registry_path),
-            cache_repo=GrouplessClaimCacheRepository(session),
-            hot_claim_store=RedisHotClaimStore(redis),
-            style_profile_service=StyleProfileService(),
-        ),
-        style_profile_service=StyleProfileService(),
-    )
+    orchestrator = build_pipeline_orchestrator(session)
     return await orchestrator.process_payload(payload)
 
 
@@ -141,7 +180,7 @@ async def set_analysis_mode(
 async def pause_group(
     group_external_id: str,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> dict[str, bool]:
+) -> dict[str, str | bool]:
     repository = GroupRepository(session)
     group = await repository.set_paused(group_external_id, paused=True)
     await session.commit()
@@ -152,7 +191,7 @@ async def pause_group(
 async def resume_group(
     group_external_id: str,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> dict[str, bool]:
+) -> dict[str, str | bool]:
     repository = GroupRepository(session)
     group = await repository.set_paused(group_external_id, paused=False)
     await session.commit()
@@ -172,8 +211,9 @@ async def refresh_outbreaks(
     settings = get_settings()
     service = OutbreakService(
         query_service=app.state.analytics_query_service,
-        hot_claim_store=RedisHotClaimStore(app.state.redis),
+        hot_claim_store=build_hot_claim_store(settings, app.state.redis),
         hot_claim_repository=HotClaimRepository(session),
+        claim_cache_repository=GrouplessClaimCacheRepository(session),
         lookback_minutes=settings.hot_claim_lookback_minutes,
         min_group_count=settings.hot_claim_min_groups,
     )
@@ -184,12 +224,19 @@ async def refresh_outbreaks(
 
 class GrouplessClaimCacheRepository:
     def __init__(self, session: AsyncSession) -> None:
-        from slumggol_bot.db.repositories import ClaimCacheRepository
-
         self.inner = ClaimCacheRepository(session)
 
-    async def get(self, claim_key: str):
+    async def get(self, claim_key: str) -> ClaimCacheEntry | None:
         return await self.inner.get(claim_key)
 
-    async def upsert(self, *, claim_key: str, result, expires_at):
-        return await self.inner.upsert(claim_key=claim_key, result=result, expires_at=expires_at)
+    async def upsert(
+        self,
+        *,
+        claim_key: str,
+        result: FactCheckResult,
+        expires_at: datetime,
+    ) -> None:
+        await self.inner.upsert(claim_key=claim_key, result=result, expires_at=expires_at)
+
+    async def text_simhashes_for_claim_keys(self, claim_keys: list[str]) -> dict[str, str]:
+        return await self.inner.text_simhashes_for_claim_keys(claim_keys)
