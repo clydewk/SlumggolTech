@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from slumggol_bot.services.language import LanguageConflict, detect_conflict
 
 from slumggol_bot.db.repositories import ClaimCacheRepository, GroupRepository
+from slumggol_bot.services.language import LanguageConflict, detect_conflict
 from slumggol_bot.schemas import (
     AnalysisMode,
     AnalyticsEvent,
@@ -26,6 +29,7 @@ from slumggol_bot.services.factcheck import FactCheckService
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.style_profiles import StyleProfileService
+from slumggol_bot.services.language import LanguageConflict, detect_conflict
 from slumggol_bot.transport.base import TransportAdapter
 
 logger = logging.getLogger(__name__)
@@ -148,10 +152,46 @@ class PipelineOrchestrator:
             await self.session.commit()
             return None
 
+        # ── Language conflict detection ──────────────────────────────────────
+        language_conflict = None
+        if assessment_message.forwarded and assessment_message.detected_languages:
+            language_conflict = detect_conflict(
+                message_languages=assessment_message.detected_languages,
+                group_languages=updated_profile.dominant_languages,
+            )
+            if language_conflict:
+                logger.info(
+                    "Language conflict detected group_id=%s message_id=%s "
+                    "message_langs=%s group_langs=%s",
+                    message.group_id,
+                    message.message_id,
+                    language_conflict.message_languages,
+                    language_conflict.group_languages,
+                )
+
+        # ── Language conflict detection ──────────────────────────────────────
+        language_conflict = None
+        if assessment_message.forwarded and assessment_message.detected_languages:
+            language_conflict = detect_conflict(
+                message_languages=assessment_message.detected_languages,
+                group_languages=updated_profile.dominant_languages,
+            )
+            if language_conflict:
+                logger.info(
+                    "Language conflict detected group_id=%s message_id=%s "
+                    "message_langs=%s group_langs=%s",
+                    message.group_id,
+                    message.message_id,
+                    language_conflict.message_languages,
+                    language_conflict.group_languages,
+                )
+
         result = await self.factcheck_service.assess_candidate(
             message=assessment_message,
             style_profile=updated_profile,
+            language_conflict=language_conflict,
         )
+
         await self.analytics_sink.write(
             [
                 claim_event(message, result),
@@ -175,17 +215,23 @@ class PipelineOrchestrator:
             await self.analytics_sink.write([reply_event(message, result)])
         elif should_reply(result):
             logger.info(
-                "Sending auto reply group_id=%s message_id=%s verdict=%s confidence=%.2f",
+                "Sending auto reply group_id=%s message_id=%s verdict=%s "
+                "confidence=%.2f reply_versions=%d",
                 message.group_id,
                 message.message_id,
                 result.verdict.value,
                 result.confidence,
+                len(result.reply_versions),
             )
-            await self.transport.send_group_message(
-                message.group_id,
-                result.reply_text,
-                reply_to_message_id=message.transport_message_id,
-            )
+            versions_to_send = result.reply_versions or [
+                type("_V", (), {"text": result.reply_text})()
+            ]
+            for version in versions_to_send:
+                await self.transport.send_group_message(
+                    message.group_id,
+                    version.text,
+                    reply_to_message_id=message.transport_message_id,
+                )
             await self.analytics_sink.write([reply_event(message, result)])
 
         await self.session.commit()

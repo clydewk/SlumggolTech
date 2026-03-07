@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from slumggol_bot.config import AppSettings
+from slumggol_bot.services.language import LanguageConflict, conflict_prompt_block
 from slumggol_bot.schemas import (
     EvidenceSource,
     FactCheckResult,
@@ -63,6 +64,7 @@ class FactCheckResponsePayload(BaseModel):
     canonical_claim_en: str
     reply_language: str = "English"
     reply_text: str = ""
+    reply_versions: list[dict[str, str]] = Field(default_factory=list)  # NEW
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
 
@@ -94,7 +96,11 @@ class OpenAIFactCheckClient:
         registry: SourceRegistry,
         allow_web_search: bool,
         style_profile_service: StyleProfileService,
+        language_conflict: LanguageConflict | None = None,  # NEW
     ) -> FactCheckResult:
+        system_prompt = self.system_prompt
+        if language_conflict:
+            system_prompt += conflict_prompt_block(language_conflict)
         user_text = "\n".join(
             part
             for part in [
@@ -145,7 +151,7 @@ class OpenAIFactCheckClient:
                 input=[
                     {
                         "role": "system",
-                        "content": [{"type": "input_text", "text": self.system_prompt}],
+                        "content": [{"type": "input_text", "text": system_prompt}],
                     },
                     {"role": "user", "content": content},
                 ],
@@ -196,6 +202,7 @@ class OpenAIFactCheckClient:
         if response is None or parsed_payload is None:
             raise RuntimeError("OpenAI factcheck response was not created.")
 
+        from slumggol_bot.schemas import ReplyVersion  # noqa: PLC0415
         result = FactCheckResult(
             needs_reply=parsed_payload.needs_reply,
             verdict=parsed_payload.verdict,
@@ -204,6 +211,11 @@ class OpenAIFactCheckClient:
             canonical_text_simhash=compute_text_simhash(parsed_payload.canonical_claim_en),
             reply_language=parsed_payload.reply_language,
             reply_text=parsed_payload.reply_text,
+            reply_versions=[
+                ReplyVersion(language=v["language"], text=v["text"])
+                for v in parsed_payload.reply_versions
+                if v.get("language") and v.get("text")
+            ],
             reason_codes=parsed_payload.reason_codes,
             evidence=parsed_payload.evidence,
             usage=_usage_from_response(response, self.settings, allow_web_search),
@@ -239,6 +251,19 @@ def _factcheck_output_format() -> dict[str, Any]:
                     "type": "string",
                     "maxLength": 600,
                 },
+                "reply_versions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "language": {"type": "string", "maxLength": 16},
+                            "text": {"type": "string", "maxLength": 600},
+                        },
+                        "required": ["language", "text"],
+                    },
+                    "maxItems": 4,
+                },
                 "reason_codes": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 64},
@@ -270,6 +295,7 @@ def _factcheck_output_format() -> dict[str, Any]:
                 "canonical_claim_en",
                 "reply_language",
                 "reply_text",
+                "reply_versions",
                 "reason_codes",
                 "evidence",
             ],
@@ -386,6 +412,7 @@ class FactCheckService:
         *,
         message: NormalizedMessage,
         style_profile: GroupStyleProfile,
+        language_conflict: LanguageConflict | None = None,  # NEW
     ) -> FactCheckResult:
         cached_result = await self._cached_result_for_message(message)
         if cached_result is not None:
@@ -418,6 +445,7 @@ class FactCheckService:
             registry=self.registry,
             allow_web_search=True,
             style_profile_service=self.style_profile_service,
+            language_conflict=language_conflict,  # NEW
         )
         result.usage.transcription_cost_usd = transcription_cost
         if result.claim_key:

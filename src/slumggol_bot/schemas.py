@@ -131,6 +131,19 @@ class ModelUsage(BaseModel):
     estimated_cost_usd: float = 0.0
     transcription_cost_usd: float = 0.0
 
+# `reply_text` stays as the primary/fallback. 
+#`reply_versions` is populated only when there's a conflict. 
+# This means zero breakage to existing consumers.
+
+class ReplyVersion(BaseModel):
+    language: str
+    text: str
+
+
+class ReplyVersion(BaseModel):
+    language: str
+    text: str
+
 
 class FactCheckResult(BaseModel):
     needs_reply: bool
@@ -140,6 +153,8 @@ class FactCheckResult(BaseModel):
     canonical_text_simhash: str | None = None
     reply_language: str
     reply_text: str
+    reply_versions: list[ReplyVersion] = Field(default_factory=list)
+    reply_versions: list[ReplyVersion] = Field(default_factory=list)  # NEW
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
     usage: ModelUsage = Field(default_factory=ModelUsage)
