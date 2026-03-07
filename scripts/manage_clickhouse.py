@@ -41,7 +41,7 @@ def main() -> None:
 def ping(settings: AppSettings) -> None:
     client = _get_client(settings, database="default")
     result = client.query(
-        "SELECT version(), %(database)s IN (SELECT name FROM system.databases) FORMAT TSV",
+        "SELECT version(), %(database)s IN (SELECT name FROM system.databases)",
         parameters={"database": settings.clickhouse_database},
     )
     version, database_exists = result.result_rows[0]
