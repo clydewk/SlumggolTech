@@ -6,7 +6,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0003_add_claim_intelligence_cache_columns"
+revision = "0003_claim_intel_cache_cols"
 down_revision = "0002_add_simhash_columns"
 branch_labels = None
 depends_on = None
