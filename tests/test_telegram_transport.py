@@ -161,6 +161,32 @@ async def test_send_group_message_supports_reply_to_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_group_message_supports_reply_markup() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "chat_id": "-100123",
+            "text": "Correction",
+            "disable_web_page_preview": True,
+            "reply_markup": {"inline_keyboard": [[{"text": "Translate", "callback_data": "x"}]]},
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 3}})
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        await transport.send_group_message(
+            "-100123",
+            "Correction",
+            reply_markup={"inline_keyboard": [[{"text": "Translate", "callback_data": "x"}]]},
+        )
+
+
+@pytest.mark.asyncio
 async def test_fetch_updates_calls_telegram_get_updates() -> None:
     settings = AppSettings(telegram_bot_token="test-token")
 
@@ -171,7 +197,7 @@ async def test_fetch_updates_calls_telegram_get_updates() -> None:
         assert payload == {
             "timeout": 20,
             "limit": 10,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "callback_query"],
             "offset": 101,
         }
         assert request.extensions["timeout"]["read"] == 25.0
@@ -433,3 +459,111 @@ async def test_normalize_webhook_ignores_reply_to_other_bot_for_followup() -> No
     message = messages[0]
     assert message.command_name is None
     assert message.text == "What about these other reasons?"
+
+
+@pytest.mark.asyncio
+async def test_answer_callback_query_calls_telegram_answer_callback_query() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/bottest-token/answerCallbackQuery"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "callback_query_id": "abc123",
+            "text": "Choose language",
+        }
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        await transport.answer_callback_query("abc123", text="Choose language")
+
+
+@pytest.mark.asyncio
+async def test_edit_message_reply_markup_calls_telegram_edit_message_reply_markup() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/bottest-token/editMessageReplyMarkup"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "chat_id": "-100123",
+            "message_id": 50,
+            "reply_markup": {"inline_keyboard": [[{"text": "English", "callback_data": "x"}]]},
+        }
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        await transport.edit_message_reply_markup(
+            "-100123",
+            50,
+            reply_markup={"inline_keyboard": [[{"text": "English", "callback_data": "x"}]]},
+        )
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_parses_translate_menu_callback_query() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 10,
+                "callback_query": {
+                    "id": "cb-1",
+                    "from": {"id": 777},
+                    "data": "translate:menu",
+                    "message": {
+                        "message_id": 99,
+                        "chat": {"id": -100123, "type": "supergroup"},
+                        "text": "Verdict: false (95% confidence)",
+                    },
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name == "translate_menu"
+    assert message.command_arg_text == ""
+    assert message.callback_query_id == "cb-1"
+    assert message.transport_message_id == 99
+    assert message.text == "Verdict: false (95% confidence)"
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_parses_translate_language_callback_query() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 11,
+                "callback_query": {
+                    "id": "cb-2",
+                    "from": {"id": 777},
+                    "data": "translate:lang:zh",
+                    "message": {
+                        "message_id": 100,
+                        "chat": {"id": -100123, "type": "supergroup"},
+                        "text": "Verdict: false (95% confidence)",
+                    },
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name == "translate_lang"
+    assert message.command_arg_text == "zh"
+    assert message.callback_query_id == "cb-2"
+    assert message.transport_message_id == 100

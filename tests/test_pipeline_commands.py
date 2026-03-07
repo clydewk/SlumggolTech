@@ -12,6 +12,7 @@ from slumggol_bot.schemas import (
     GroupStyleProfile,
     ModelUsage,
     NormalizedMessage,
+    TranslationResult,
     Verdict,
 )
 from slumggol_bot.services.pipeline import (
@@ -46,7 +47,9 @@ class FakeGroupRepo:
 
 class FakeTransport:
     def __init__(self) -> None:
-        self.sent_messages: list[tuple[str, str, int | None]] = []
+        self.sent_messages: list[tuple[str, str, int | None, dict | None]] = []
+        self.answered_callbacks: list[tuple[str, str | None]] = []
+        self.edited_markups: list[tuple[str, int, dict | None]] = []
 
     async def normalize_webhook(self, payload: dict) -> list[NormalizedMessage]:  # noqa: ARG002
         return []
@@ -57,8 +60,26 @@ class FakeTransport:
         reply_text: str,
         *,
         reply_to_message_id: int | None = None,
+        reply_markup: dict | None = None,
     ) -> None:
-        self.sent_messages.append((group_id, reply_text, reply_to_message_id))
+        self.sent_messages.append((group_id, reply_text, reply_to_message_id, reply_markup))
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: str | None = None,
+    ) -> None:
+        self.answered_callbacks.append((callback_query_id, text))
+
+    async def edit_message_reply_markup(
+        self,
+        group_id: str,
+        message_id: int,
+        *,
+        reply_markup: dict | None = None,
+    ) -> None:
+        self.edited_markups.append((group_id, message_id, reply_markup))
 
 
 class FakeAnalyticsSink:
@@ -135,6 +156,26 @@ class FakeFactCheckService:
         self.followup_messages.append(message)
         return "Here are the additional reasons and evidence."
 
+    async def translate_text(
+        self,
+        *,
+        text: str,  # noqa: ARG002
+        target_language: str,
+    ) -> TranslationResult:
+        if target_language == "zh":
+            return TranslationResult(
+                source_language="en",
+                target_language="zh",
+                needs_translation=True,
+                translated_text="这是翻译后的版本。",
+            )
+        return TranslationResult(
+            source_language=target_language,
+            target_language=target_language,
+            needs_translation=False,
+            translated_text="",
+        )
+
 
 class FakeStyleProfileService:
     def update_profile(
@@ -193,6 +234,7 @@ async def test_factcheck_command_bypasses_gate_and_replies() -> None:
     assert "Verdict: false (95% confidence)" in transport.sent_messages[0][1]
     assert "This is not correct." in transport.sent_messages[0][1]
     assert transport.sent_messages[0][2] == 22
+    assert transport.sent_messages[0][3] is not None
 
 
 @pytest.mark.asyncio
@@ -232,6 +274,88 @@ async def test_followup_reply_to_bot_bypasses_gate_and_threads_reply() -> None:
     assert transport.sent_messages
     assert transport.sent_messages[0][1] == "Here are the additional reasons and evidence."
     assert transport.sent_messages[0][2] == 120
+    assert transport.sent_messages[0][3] is not None
+
+
+@pytest.mark.asyncio
+async def test_translate_menu_callback_edits_keyboard_to_language_options() -> None:
+    transport = FakeTransport()
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=FakeFactCheckService(),
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:abc",
+        transport_message_id=321,
+        sender_id="888",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_menu",
+        callback_query_id="abc",
+        callback_data="translate:menu",
+        text="Verdict: false (95% confidence)",
+    )
+
+    result = await orchestrator.process_message(message)
+
+    assert result is None
+    assert transport.edited_markups
+    assert transport.edited_markups[0][0] == "-100123"
+    assert transport.edited_markups[0][1] == 321
+    assert transport.answered_callbacks == [("abc", "Choose language")]
+
+
+@pytest.mark.asyncio
+async def test_translate_lang_callback_sends_translation_once() -> None:
+    transport = FakeTransport()
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=FakeFactCheckService(),
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:def",
+        transport_message_id=654,
+        sender_id="777",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_lang",
+        command_arg_text="zh",
+        callback_query_id="def",
+        callback_data="translate:lang:zh",
+        text="This claim is false.",
+    )
+
+    first_result = await orchestrator.process_message(message)
+    second_result = await orchestrator.process_message(message)
+
+    assert first_result is None
+    assert second_result is None
+    assert len(transport.sent_messages) == 1
+    assert transport.sent_messages[0][1] == "这是翻译后的版本。"
+    assert transport.sent_messages[0][2] == 654
+    assert transport.sent_messages[0][3] is not None
+    assert transport.answered_callbacks[0] == ("def", "Translated to 中文")
+    assert transport.answered_callbacks[1] == ("def", "Already translated to 中文.")
 
 
 @pytest.mark.asyncio

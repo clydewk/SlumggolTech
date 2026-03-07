@@ -18,6 +18,7 @@ from slumggol_bot.schemas import (
     GroupStyleProfile,
     ModelUsage,
     NormalizedMessage,
+    TranslationResult,
     Verdict,
 )
 from slumggol_bot.services.cache import HotClaimStore
@@ -28,6 +29,7 @@ from slumggol_bot.services.style_profiles import StyleProfileService
 logger = logging.getLogger(__name__)
 _FACTCHECK_OUTPUT_TOKEN_BUDGETS = (1200, 2200)
 _FOLLOWUP_MAX_OUTPUT_TOKENS = 900
+_TRANSLATION_MAX_OUTPUT_TOKENS = 700
 
 
 class ClaimCacheProtocol(Protocol):
@@ -68,6 +70,15 @@ class FactCheckResponsePayload(BaseModel):
     reply_versions: list[dict[str, str]] = Field(default_factory=list)  # NEW
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
+
+
+class TranslationResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_language: str
+    target_language: str
+    needs_translation: bool
+    translated_text: str
 
 
 class OpenAIFactCheckClient:
@@ -293,6 +304,66 @@ class OpenAIFactCheckClient:
             raise ValueError("OpenAI follow-up response did not include output text.")
         return answer
 
+    async def translate_text(
+        self,
+        *,
+        text: str,
+        target_language: str,
+    ) -> TranslationResult:
+        normalized_target = target_language.strip().lower()
+        if normalized_target not in {"en", "zh", "ms", "ta"}:
+            raise ValueError(f"Unsupported translation target: {target_language}")
+        responses_api: Any = self.client.responses
+        response = await responses_api.create(
+            model=self.settings.openai_model,
+            reasoning={"effort": "low"},
+            text={
+                "verbosity": "low",
+                "format": _translation_output_format(),
+            },
+            max_output_tokens=_TRANSLATION_MAX_OUTPUT_TOKENS,
+            store=False,
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Detect the source language and translate accurately. "
+                                "Supported language codes are en, zh, ms, ta, other."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"Target language code: {normalized_target}\n"
+                                f"Text to translate:\n{text}"
+                            ),
+                        }
+                    ],
+                },
+            ],
+        )
+        payload = TranslationResponsePayload.model_validate_json(_extract_output_text(response))
+        source_language = payload.source_language.strip().lower()
+        if source_language not in {"en", "zh", "ms", "ta", "other"}:
+            source_language = "other"
+        target_language_value = payload.target_language.strip().lower()
+        if target_language_value not in {"en", "zh", "ms", "ta"}:
+            target_language_value = normalized_target
+        return TranslationResult(
+            source_language=source_language,
+            target_language=target_language_value,
+            needs_translation=payload.needs_translation,
+            translated_text=payload.translated_text.strip(),
+        )
+
 
 def _factcheck_output_format() -> dict[str, Any]:
     return {
@@ -368,6 +439,36 @@ def _factcheck_output_format() -> dict[str, Any]:
                 "reply_versions",
                 "reason_codes",
                 "evidence",
+            ],
+        },
+    }
+
+
+def _translation_output_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "name": "translation_result",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "source_language": {
+                    "type": "string",
+                    "enum": ["en", "zh", "ms", "ta", "other"],
+                },
+                "target_language": {
+                    "type": "string",
+                    "enum": ["en", "zh", "ms", "ta"],
+                },
+                "needs_translation": {"type": "boolean"},
+                "translated_text": {"type": "string", "maxLength": 1200},
+            },
+            "required": [
+                "source_language",
+                "target_language",
+                "needs_translation",
+                "translated_text",
             ],
         },
     }
@@ -544,6 +645,17 @@ class FactCheckService:
             style_profile=style_profile,
             registry=self.registry,
             style_profile_service=self.style_profile_service,
+        )
+
+    async def translate_text(
+        self,
+        *,
+        text: str,
+        target_language: str,
+    ) -> TranslationResult:
+        return await self.client.translate_text(
+            text=text,
+            target_language=target_language,
         )
 
     async def _cached_result_for_message(

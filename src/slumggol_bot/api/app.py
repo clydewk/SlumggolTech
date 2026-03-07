@@ -36,6 +36,10 @@ from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.outbreak import OutbreakService
 from slumggol_bot.services.pipeline import PipelineOrchestrator
 from slumggol_bot.services.style_profiles import StyleProfileService
+from slumggol_bot.services.translation import (
+    InMemoryTranslationStateStore,
+    RedisTranslationStateStore,
+)
 from slumggol_bot.transport.base import TransportAdapter
 from slumggol_bot.transport.telegram import TelegramTransport
 
@@ -120,6 +124,9 @@ def build_pipeline_orchestrator(
             text_simhash_max_distance=settings.text_simhash_max_distance,
         ),
         style_profile_service=StyleProfileService(),
+        translation_state_store=(
+            RedisTranslationStateStore(redis) if redis else InMemoryTranslationStateStore()
+        ),
     )
 
 
