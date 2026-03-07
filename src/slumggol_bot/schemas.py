@@ -40,6 +40,8 @@ class GroupStyleProfile(BaseModel):
     punctuation_bias: list[str] = Field(default_factory=list)
     discourse_particles: list[str] = Field(default_factory=list)
     message_count: int = 0
+    lingo_style: str = "mixed"
+    lingo_style_override: str | None = None
 
 
 class NormalizedMessage(BaseModel):
