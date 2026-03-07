@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -9,6 +9,7 @@ from typing import Any, Protocol
 import httpx
 import yaml
 from openai import AsyncOpenAI
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from slumggol_bot.config import AppSettings
 from slumggol_bot.schemas import (
@@ -22,6 +23,9 @@ from slumggol_bot.schemas import (
 from slumggol_bot.services.cache import HotClaimStore
 from slumggol_bot.services.hashing import compute_text_hash
 from slumggol_bot.services.style_profiles import StyleProfileService
+
+logger = logging.getLogger(__name__)
+_FACTCHECK_OUTPUT_TOKEN_BUDGETS = (1200, 2200)
 
 
 class ClaimCacheProtocol(Protocol):
@@ -48,6 +52,19 @@ class SourceRegistry:
         return "Prefer these Singapore-first domains when evaluating evidence: " + ", ".join(
             self.preferred_domains()
         )
+
+
+class FactCheckResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    needs_reply: bool
+    verdict: Verdict
+    confidence: float = Field(ge=0.0, le=1.0)
+    canonical_claim_en: str
+    reply_language: str = "English"
+    reply_text: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceSource] = Field(default_factory=list)
 
 
 class OpenAIFactCheckClient:
@@ -97,34 +114,151 @@ class OpenAIFactCheckClient:
         if message.content_kind.value == "image" and message.media_url:
             content.append(await _image_input_content(message.media_url, message.media_mimetype))
         tools = [{"type": "web_search_preview"}] if allow_web_search else []
+        response = None
+        parsed_payload = None
+        for attempt, max_output_tokens in enumerate(_FACTCHECK_OUTPUT_TOKEN_BUDGETS, start=1):
+            response = await self.client.responses.create(
+                model=self.settings.openai_model,
+                reasoning={"effort": "low"},
+                text={
+                    "verbosity": "low",
+                    "format": _factcheck_output_format(),
+                },
+                max_output_tokens=max_output_tokens,
+                store=False,
+                tools=tools,
+                input=[
+                    {
+                        "role": "system",
+                        "content": [{"type": "input_text", "text": self.system_prompt}],
+                    },
+                    {"role": "user", "content": content},
+                ],
+            )
 
-        response = await self.client.responses.create(
-            model=self.settings.openai_model,
-            reasoning={"effort": "low"},
-            text={"verbosity": "low"},
-            max_output_tokens=700,
-            store=False,
-            tools=tools,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": self.system_prompt}]},
-                {"role": "user", "content": content},
-            ],
-        )
+            try:
+                parsed_payload = FactCheckResponsePayload.model_validate_json(
+                    _extract_output_text(response)
+                )
+                break
+            except (ValidationError, ValueError):
+                incomplete_reason = _response_incomplete_reason(response)
+                if (
+                    incomplete_reason == "max_output_tokens"
+                    and attempt < len(_FACTCHECK_OUTPUT_TOKEN_BUDGETS)
+                ):
+                    logger.warning(
+                        (
+                            "Retrying incomplete OpenAI factcheck response "
+                            "response_id=%s model=%s status=%s incomplete_reason=%s "
+                            "max_output_tokens=%s output_chars=%s output_sha256=%s"
+                        ),
+                        getattr(response, "id", None),
+                        self.settings.openai_model,
+                        getattr(response, "status", None),
+                        incomplete_reason,
+                        max_output_tokens,
+                        len(_safe_output_text(response)),
+                        compute_text_hash(_safe_output_text(response)),
+                    )
+                    continue
+                logger.exception(
+                    (
+                        "Failed to parse OpenAI factcheck response "
+                        "response_id=%s model=%s status=%s incomplete_reason=%s "
+                        "max_output_tokens=%s output_chars=%s output_sha256=%s"
+                    ),
+                    getattr(response, "id", None),
+                    self.settings.openai_model,
+                    getattr(response, "status", None),
+                    incomplete_reason,
+                    max_output_tokens,
+                    len(_safe_output_text(response)),
+                    compute_text_hash(_safe_output_text(response)),
+                )
+                raise
 
-        parsed = json.loads(_extract_output_text(response))
+        if response is None or parsed_payload is None:
+            raise RuntimeError("OpenAI factcheck response was not created.")
+
         result = FactCheckResult(
-            needs_reply=bool(parsed["needs_reply"]),
-            verdict=Verdict(parsed["verdict"]),
-            confidence=float(parsed["confidence"]),
-            canonical_claim_en=parsed["canonical_claim_en"],
-            reply_language=parsed.get("reply_language", "English"),
-            reply_text=parsed.get("reply_text", ""),
-            reason_codes=parsed.get("reason_codes", []),
-            evidence=[EvidenceSource.model_validate(item) for item in parsed.get("evidence", [])],
+            needs_reply=parsed_payload.needs_reply,
+            verdict=parsed_payload.verdict,
+            confidence=parsed_payload.confidence,
+            canonical_claim_en=parsed_payload.canonical_claim_en,
+            reply_language=parsed_payload.reply_language,
+            reply_text=parsed_payload.reply_text,
+            reason_codes=parsed_payload.reason_codes,
+            evidence=parsed_payload.evidence,
             usage=_usage_from_response(response, self.settings, allow_web_search),
         )
         result.claim_key = compute_text_hash(result.canonical_claim_en)
         return result
+
+
+def _factcheck_output_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "name": "factcheck_result",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "needs_reply": {"type": "boolean"},
+                "verdict": {
+                    "type": "string",
+                    "enum": [member.value for member in Verdict],
+                },
+                "confidence": {"type": "number"},
+                "canonical_claim_en": {
+                    "type": "string",
+                    "maxLength": 240,
+                },
+                "reply_language": {
+                    "type": "string",
+                    "maxLength": 32,
+                },
+                "reply_text": {
+                    "type": "string",
+                    "maxLength": 600,
+                },
+                "reason_codes": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "maxItems": 8,
+                },
+                "evidence": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "title": {"type": "string", "maxLength": 240},
+                            "url": {"type": "string", "maxLength": 500},
+                            "domain": {"type": "string", "maxLength": 120},
+                            "published_at": {
+                                "type": ["string", "null"],
+                                "maxLength": 32,
+                            },
+                        },
+                        "required": ["title", "url", "domain", "published_at"],
+                    },
+                },
+            },
+            "required": [
+                "needs_reply",
+                "verdict",
+                "confidence",
+                "canonical_claim_en",
+                "reply_language",
+                "reply_text",
+                "reason_codes",
+                "evidence",
+            ],
+        },
+    }
 
 
 def _extract_output_text(response: Any) -> str:
@@ -140,6 +274,18 @@ def _extract_output_text(response: Any) -> str:
             if text:
                 return text
     raise ValueError("OpenAI response did not include output text.")
+
+
+def _safe_output_text(response: Any) -> str:
+    try:
+        return _extract_output_text(response)
+    except ValueError:
+        return ""
+
+
+def _response_incomplete_reason(response: Any) -> str | None:
+    details = getattr(response, "incomplete_details", None)
+    return getattr(details, "reason", None)
 
 
 def _usage_from_response(

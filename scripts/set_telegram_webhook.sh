@@ -10,9 +10,19 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+env_telegram_base_url="${TELEGRAM_BASE_URL:-}"
+env_telegram_bot_token="${TELEGRAM_BOT_TOKEN:-}"
+env_telegram_webhook_secret="${TELEGRAM_WEBHOOK_SECRET:-}"
+env_public_webhook_url="${PUBLIC_WEBHOOK_URL:-}"
+
 set -a
 source .env
 set +a
+
+TELEGRAM_BASE_URL="${env_telegram_base_url:-${TELEGRAM_BASE_URL:-}}"
+TELEGRAM_BOT_TOKEN="${env_telegram_bot_token:-${TELEGRAM_BOT_TOKEN:-}}"
+TELEGRAM_WEBHOOK_SECRET="${env_telegram_webhook_secret:-${TELEGRAM_WEBHOOK_SECRET:-}}"
+PUBLIC_WEBHOOK_URL="${env_public_webhook_url:-${PUBLIC_WEBHOOK_URL:-}}"
 
 : "${TELEGRAM_BASE_URL:?TELEGRAM_BASE_URL is required}"
 : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}"

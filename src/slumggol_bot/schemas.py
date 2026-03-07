@@ -45,6 +45,8 @@ class NormalizedMessage(BaseModel):
     message_id: str
     sender_id: str
     content_kind: ContentKind
+    command_name: str | None = None
+    command_arg_text: str = ""
     text: str = ""
     quoted_text: str = ""
     caption: str = ""
@@ -74,7 +76,21 @@ class NormalizedMessage(BaseModel):
 
     @property
     def primary_text(self) -> str:
-        return "\n".join(part for part in [self.text, self.caption, self.transcript_text or ""] if part)
+        parts = [self.text, self.caption, self.transcript_text or ""]
+        return "\n".join(part for part in parts if part)
+
+    def command_target_text(self) -> str:
+        parts = [
+            self.command_arg_text,
+            self.quoted_text,
+            self.caption,
+            self.transcript_text or "",
+        ]
+        return "\n".join(
+            part
+            for part in parts
+            if part
+        ).strip()
 
 
 class HashObservation(BaseModel):
@@ -143,4 +159,3 @@ class GroupMetrics(BaseModel):
     claim_spread_count: int = 0
     spend_usd: float = 0.0
     reply_count: int = 0
-

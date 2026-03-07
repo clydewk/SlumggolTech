@@ -129,3 +129,28 @@ async def test_send_group_message_uses_telegram_send_message() -> None:
     ) as client:
         transport = TelegramTransport(settings, client=client)
         await transport.send_group_message("-100123", "Correction")
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_parses_factcheck_command() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 3,
+                "message": {
+                    "message_id": 45,
+                    "date": 1_710_000_456,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 42},
+                    "text": "/factcheck MOH confirmed that drinking salt water cures dengue",
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name == "factcheck"
+    assert message.command_arg_text == "MOH confirmed that drinking salt water cures dengue"
+    assert message.text == "MOH confirmed that drinking salt water cures dengue"

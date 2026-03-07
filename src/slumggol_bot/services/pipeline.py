@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,8 @@ from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash
 from slumggol_bot.services.style_profiles import StyleProfileService
 from slumggol_bot.transport.base import TransportAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestrator:
@@ -54,7 +56,11 @@ class PipelineOrchestrator:
         processed = 0
         replied = 0
         for message in messages:
-            result = await self.process_message(message)
+            try:
+                result = await self.process_message(message)
+            except Exception as exc:  # noqa: BLE001
+                await self.handle_processing_error(message, exc)
+                result = None
             processed += 1
             if result is not None and result.needs_reply:
                 replied += 1
@@ -70,12 +76,30 @@ class PipelineOrchestrator:
             message.available_hashes(),
             group_id=message.group_id,
         )
-        is_hot_hash = any(await self.hot_claim_store.contains_hash(hash_key) for hash_key in message.available_hashes())
-        decision = self.candidate_gate.decide(
-            message=message,
-            analysis_mode=AnalysisMode(group.analysis_mode),
-            hash_observations=hash_observations,
-            is_hot_hash=is_hot_hash,
+        is_hot_hash = False
+        for hash_key in message.available_hashes():
+            if await self.hot_claim_store.contains_hash(hash_key):
+                is_hot_hash = True
+                break
+        decision = explicit_command_decision(message)
+        if decision is None:
+            decision = self.candidate_gate.decide(
+                message=message,
+                analysis_mode=AnalysisMode(group.analysis_mode),
+                hash_observations=hash_observations,
+                is_hot_hash=is_hot_hash,
+            )
+        logger.info(
+            (
+                "Decision group_id=%s message_id=%s command=%s candidate=%s "
+                "reason_codes=%s paused=%s"
+            ),
+            message.group_id,
+            message.message_id,
+            message.command_name or "-",
+            decision.candidate,
+            ",".join(decision.reason_codes),
+            group.paused,
         )
         await self.analytics_sink.write([message_event(message, decision)])
 
@@ -83,8 +107,22 @@ class PipelineOrchestrator:
             await self.session.commit()
             return None
 
+        assessment_message = message_for_assessment(message)
+        if assessment_message is None:
+            logger.info(
+                "Factcheck command missing target group_id=%s message_id=%s",
+                message.group_id,
+                message.message_id,
+            )
+            await self.transport.send_group_message(
+                message.group_id,
+                "Usage: /factcheck <claim> or reply to a message with /factcheck",
+            )
+            await self.session.commit()
+            return None
+
         result = await self.factcheck_service.assess_candidate(
-            message=message,
+            message=assessment_message,
             style_profile=updated_profile,
         )
         await self.analytics_sink.write(
@@ -94,12 +132,61 @@ class PipelineOrchestrator:
                 usage_event(message, result),
             ]
         )
-        if should_reply(result):
+        if message.command_name == "factcheck":
+            reply_text = build_factcheck_command_reply(result)
+            logger.info(
+                (
+                    "Sending factcheck command reply group_id=%s "
+                    "message_id=%s verdict=%s confidence=%.2f"
+                ),
+                message.group_id,
+                message.message_id,
+                result.verdict.value,
+                result.confidence,
+            )
+            await self.transport.send_group_message(message.group_id, reply_text)
+            await self.analytics_sink.write([reply_event(message, result)])
+        elif should_reply(result):
+            logger.info(
+                "Sending auto reply group_id=%s message_id=%s verdict=%s confidence=%.2f",
+                message.group_id,
+                message.message_id,
+                result.verdict.value,
+                result.confidence,
+            )
             await self.transport.send_group_message(message.group_id, result.reply_text)
             await self.analytics_sink.write([reply_event(message, result)])
 
         await self.session.commit()
         return result
+
+    async def handle_processing_error(
+        self,
+        message: NormalizedMessage,
+        exc: Exception,
+    ) -> None:
+        logger.exception(
+            "Processing failed group_id=%s message_id=%s command=%s content_kind=%s",
+            message.group_id,
+            message.message_id,
+            message.command_name or "-",
+            message.content_kind.value,
+        )
+        rollback = getattr(self.session, "rollback", None)
+        if callable(rollback):
+            await rollback()
+        if message.command_name == "factcheck":
+            try:
+                await self.transport.send_group_message(
+                    message.group_id,
+                    build_factcheck_command_error_reply(exc),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to send command error reply group_id=%s message_id=%s",
+                    message.group_id,
+                    message.message_id,
+                )
 
 
 def should_reply(result: FactCheckResult) -> bool:
@@ -108,6 +195,75 @@ def should_reply(result: FactCheckResult) -> bool:
         and result.verdict in {Verdict.FALSE, Verdict.MISLEADING, Verdict.UNSUPPORTED}
         and result.confidence >= 0.82
         and len(result.evidence) >= 2
+    )
+
+
+def explicit_command_decision(message: NormalizedMessage) -> CandidateDecision | None:
+    if message.command_name != "factcheck":
+        return None
+    return CandidateDecision(candidate=True, reason_codes=["command_factcheck"])
+
+
+def message_for_assessment(message: NormalizedMessage) -> NormalizedMessage | None:
+    if message.command_name != "factcheck":
+        return message
+
+    target_text = message.command_target_text()
+    if not target_text and not message.media_url:
+        return None
+
+    return message.model_copy(
+        update={
+            "text": target_text,
+            "command_arg_text": target_text,
+            "quoted_text": "",
+            "caption": "",
+            "text_sha256": compute_text_hash(target_text),
+        }
+    )
+
+
+def build_factcheck_command_reply(result: FactCheckResult) -> str:
+    verdict_label = result.verdict.value.replace("_", " ")
+    confidence = f"{result.confidence:.0%}"
+    summary = f"Verdict: {verdict_label} ({confidence} confidence)"
+    detail = result.reply_text.strip() or fallback_factcheck_command_reply(result)
+    source_lines = [
+        f"- {source.title}: {source.url}"
+        for source in result.evidence[:2]
+        if source.title and source.url
+    ]
+    if not source_lines:
+        return "\n".join([summary, detail])
+    return "\n".join([summary, detail, "Sources:", *source_lines])
+
+
+def fallback_factcheck_command_reply(result: FactCheckResult) -> str:
+    if result.verdict == Verdict.NON_FACTUAL:
+        return (
+            "This looks like opinion or a non-factual statement, "
+            "so there is nothing concrete to verify."
+        )
+    if result.verdict == Verdict.UNCLEAR:
+        return "I could not verify this confidently enough from the available evidence."
+    if result.verdict == Verdict.UNSUPPORTED:
+        return "I could not find strong evidence supporting this claim."
+    if result.verdict == Verdict.MISLEADING:
+        return "This claim leaves out important context and is misleading."
+    if result.verdict == Verdict.FALSE:
+        return "This claim is false."
+    return "I checked it, but the result was inconclusive."
+
+
+def build_factcheck_command_error_reply(exc: Exception) -> str:
+    if exc.__class__.__name__ == "AuthenticationError":
+        return (
+            "Fact-check is temporarily unavailable because the OpenAI API key is invalid. "
+            "Please update the bot's OpenAI credentials and try again."
+        )
+    return (
+        "Fact-check is temporarily unavailable because the upstream check failed. "
+        "Please try again."
     )
 
 
@@ -139,7 +295,7 @@ def claim_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
         table="claim_events",
         payload={
             "event_id": f"{message.message_id}:claim",
-            "occurred_at": datetime.now(timezone.utc),
+            "occurred_at": datetime.now(UTC),
             "group_id": message.group_id,
             "message_id": message.message_id,
             "claim_key": result.claim_key,
@@ -155,7 +311,7 @@ def factcheck_event(message: NormalizedMessage, result: FactCheckResult) -> Anal
         table="factcheck_events",
         payload={
             "event_id": f"{message.message_id}:factcheck",
-            "occurred_at": datetime.now(timezone.utc),
+            "occurred_at": datetime.now(UTC),
             "group_id": message.group_id,
             "message_id": message.message_id,
             "claim_key": result.claim_key,
@@ -174,7 +330,7 @@ def reply_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
         table="reply_events",
         payload={
             "event_id": f"{message.message_id}:reply",
-            "occurred_at": datetime.now(timezone.utc),
+            "occurred_at": datetime.now(UTC),
             "group_id": message.group_id,
             "message_id": message.message_id,
             "claim_key": result.claim_key,
@@ -192,7 +348,7 @@ def usage_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
         table="usage_events",
         payload={
             "event_id": f"{message.message_id}:usage",
-            "occurred_at": datetime.now(timezone.utc),
+            "occurred_at": datetime.now(UTC),
             "group_id": message.group_id,
             "message_id": message.message_id,
             "claim_key": result.claim_key,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, TypedDict
 
@@ -8,6 +10,12 @@ import httpx
 from slumggol_bot.config import AppSettings
 from slumggol_bot.schemas import ContentKind, NormalizedMessage
 from slumggol_bot.services.hashing import compute_text_hash
+
+_FACTCHECK_COMMAND_RE = re.compile(
+    r"^/factcheck(?:@[A-Za-z0-9_]+)?(?:\s+(?P<args>.*))?$",
+    re.IGNORECASE,
+)
+logger = logging.getLogger(__name__)
 
 
 class TelegramTransport:
@@ -21,13 +29,29 @@ class TelegramTransport:
     async def normalize_webhook(self, payload: dict[str, Any]) -> list[NormalizedMessage]:
         message = self._extract_message(payload)
         if message is None:
+            logger.info("Ignoring Telegram update without message payload")
             return []
 
         chat = message.get("chat", {})
         if chat.get("type") not in {"group", "supergroup"}:
+            logger.info("Ignoring Telegram update for unsupported chat type: %s", chat.get("type"))
             return []
 
-        return [await self._normalize_message(message)]
+        normalized = await self._normalize_message(message)
+        logger.info(
+            (
+                "Telegram message normalized chat_id=%s message_id=%s command=%s "
+                "content_kind=%s forwarded=%s has_text=%s has_media=%s"
+            ),
+            normalized.group_id,
+            normalized.message_id,
+            normalized.command_name or "-",
+            normalized.content_kind.value,
+            normalized.forwarded,
+            bool(normalized.primary_text),
+            bool(normalized.media_url),
+        )
+        return [normalized]
 
     async def send_group_message(self, group_id: str, reply_text: str) -> None:
         if not self.settings.telegram_bot_token:
@@ -60,6 +84,8 @@ class TelegramTransport:
         text = message.get("text", "") if isinstance(message.get("text"), str) else ""
         caption = message.get("caption", "") if isinstance(message.get("caption"), str) else ""
         quoted_text = self._extract_quoted_text(message.get("reply_to_message"))
+        command_name, command_arg_text = self._parse_command(text)
+        normalized_text = command_arg_text if command_name == "factcheck" else text
 
         content_kind = ContentKind.TEXT
         media_url: str | None = None
@@ -86,7 +112,9 @@ class TelegramTransport:
             message_id=message_id,
             sender_id=sender_id,
             content_kind=content_kind,
-            text=text,
+            command_name=command_name,
+            command_arg_text=command_arg_text,
+            text=normalized_text,
             quoted_text=quoted_text,
             caption=caption,
             forwarded=bool(
@@ -97,7 +125,7 @@ class TelegramTransport:
             media_mimetype=media_mimetype,
             media_duration_seconds=media_duration_seconds,
             detected_languages=[],
-            text_sha256=compute_text_hash(hash_input),
+            text_sha256=compute_text_hash(normalized_text or quoted_text or caption or hash_input),
         )
 
     def _extract_message(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -192,6 +220,12 @@ class TelegramTransport:
 
     def _api_path(self, method: str) -> str:
         return f"/bot{self.settings.telegram_bot_token}/{method}"
+
+    def _parse_command(self, text: str) -> tuple[str | None, str]:
+        match = _FACTCHECK_COMMAND_RE.match(text.strip())
+        if match is None:
+            return None, ""
+        return "factcheck", (match.group("args") or "").strip()
 
 
 class AudioPayload(TypedDict):

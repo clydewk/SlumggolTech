@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
+from slumggol_bot.config import AppSettings
 from slumggol_bot.schemas import (
     ContentKind,
     EvidenceSource,
@@ -15,7 +18,7 @@ from slumggol_bot.schemas import (
     Verdict,
 )
 from slumggol_bot.services.cache import InMemoryHotClaimStore
-from slumggol_bot.services.factcheck import FactCheckService
+from slumggol_bot.services.factcheck import FactCheckService, OpenAIFactCheckClient
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 
@@ -71,6 +74,38 @@ class FakeRegistry:
         return "Prefer gov.sg"
 
 
+class FakeResponsesClient:
+    def __init__(self, responses) -> None:  # noqa: ANN001
+        self.responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        return self.responses[len(self.calls) - 1]
+
+
+class FakeResponse:
+    def __init__(
+        self,
+        *,
+        response_id: str,
+        status: str,
+        output_text: str,
+        incomplete_reason: str | None = None,
+    ) -> None:
+        self.id = response_id
+        self.status = status
+        self.output_text = output_text
+        self.incomplete_details = (
+            SimpleNamespace(reason=incomplete_reason) if incomplete_reason else None
+        )
+        self.usage = SimpleNamespace(
+            input_tokens=123,
+            output_tokens=45,
+            output_tokens_details=SimpleNamespace(reasoning_tokens=6),
+        )
+
+
 @pytest.mark.asyncio
 async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -> None:
     cache = FakeCacheRepo()
@@ -88,11 +123,14 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
     await cache.upsert(
         claim_key="claim-key-1",
         result=cached_result,
-        expires_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(UTC),
     )
 
     hot_store = InMemoryHotClaimStore()
-    await hot_store.replace([HotClaim(hash_key="hash-1", claim_key="claim-key-1", reason="hot", score=3)], 60)
+    await hot_store.replace(
+        [HotClaim(hash_key="hash-1", claim_key="claim-key-1", reason="hot", score=3)],
+        60,
+    )
     client = FakeClient()
     service = FactCheckService(
         client=client,
@@ -104,7 +142,7 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
 
     result = await service.assess_candidate(
         message=NormalizedMessage(
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             group_id="group-1",
             message_id="message-1",
             sender_id="sender-1",
@@ -118,3 +156,67 @@ async def test_factcheck_service_returns_cached_hot_claim_without_model_call() -
     assert result.cache_hit is True
     assert client.calls == 0
     assert result.reply_text == "Cached correction"
+
+
+@pytest.mark.asyncio
+async def test_openai_factcheck_client_retries_truncated_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = AppSettings(openai_api_key="test-key")
+    client = OpenAIFactCheckClient(settings)
+    fake_responses = FakeResponsesClient(
+        [
+            FakeResponse(
+                response_id="resp_incomplete",
+                status="incomplete",
+                incomplete_reason="max_output_tokens",
+                output_text=(
+                    '{"needs_reply":true,"verdict":"false","confidence":0.99,'
+                    '"canonical_claim_en":"MOH confirmed'
+                ),
+            ),
+            FakeResponse(
+                response_id="resp_complete",
+                status="completed",
+                output_text=(
+                    '{"needs_reply":true,"verdict":"false","confidence":0.99,'
+                    '"canonical_claim_en":"MOH confirmed that drinking salt water cures dengue.",'
+                    '"reply_language":"English",'
+                    '"reply_text":"This is false. There is no official guidance '
+                    'saying salt water cures dengue.",'
+                    '"reason_codes":["public_health_claim","official_sources_contradict"],'
+                    '"evidence":['
+                    '{"title":"MOH","url":"https://www.moh.gov.sg/example","domain":"moh.gov.sg","published_at":"2024-01-01"},'
+                    '{"title":"gov.sg","url":"https://www.gov.sg/example","domain":"gov.sg","published_at":"2024-01-02"}'
+                    ']}'
+                ),
+            ),
+        ]
+    )
+    client.client = SimpleNamespace(responses=fake_responses)
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-5264231879",
+        message_id="-5264231879:42",
+        sender_id="123",
+        content_kind=ContentKind.TEXT,
+        text="MOH confirmed that drinking salt water cures dengue",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await client.fact_check(
+            message=message,
+            style_profile=GroupStyleProfile(),
+            registry=FakeRegistry(),
+            allow_web_search=True,
+            style_profile_service=StyleProfileService(),
+        )
+
+    assert result.verdict == Verdict.FALSE
+    assert len(result.evidence) == 2
+    assert fake_responses.calls[0]["text"]["format"]["type"] == "json_schema"
+    assert (
+        fake_responses.calls[0]["max_output_tokens"]
+        < fake_responses.calls[1]["max_output_tokens"]
+    )
+    assert "Retrying incomplete OpenAI factcheck response" in caplog.text
