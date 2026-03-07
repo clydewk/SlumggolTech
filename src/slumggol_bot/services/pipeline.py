@@ -7,9 +7,11 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from slumggol_bot.services.language import LanguageConflict, detect_conflict
+from slumggol_bot.services.rate_limit import RateLimiter
 
 from slumggol_bot.db.repositories import ClaimCacheRepository, GroupRepository
 from slumggol_bot.services.language import LanguageConflict, detect_conflict
+from slumggol_bot.services.rate_limit import RateLimiter
 from slumggol_bot.schemas import (
     AnalysisMode,
     AnalyticsEvent,
@@ -30,6 +32,7 @@ from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.style_profiles import StyleProfileService
 from slumggol_bot.services.language import LanguageConflict, detect_conflict
+from slumggol_bot.services.rate_limit import RateLimiter
 from slumggol_bot.transport.base import TransportAdapter
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,7 @@ class PipelineOrchestrator:
         self.candidate_gate = candidate_gate
         self.factcheck_service = factcheck_service
         self.style_profile_service = style_profile_service
+        self.rate_limiter = rate_limiter
         self.group_repo = GroupRepository(session)
         self.claim_cache_repo = ClaimCacheRepository(session)
 
@@ -78,6 +82,22 @@ class PipelineOrchestrator:
 
     async def process_message(self, message: NormalizedMessage) -> FactCheckResult | None:
         group = await self.group_repo.get_or_create(external_id=message.group_id)
+        if not await self.rate_limiter.user_allowed(message.sender_id, message.group_id):
+            await self.transport.send_group_message(
+                message.group_id,
+                "Eh, slow down lah 🙏 You sending too many messages. Try again in a bit.",
+                reply_to_message_id=message.transport_message_id,
+            )
+            return None
+
+        if not await self.rate_limiter.group_allowed(message.group_id):
+            await self.transport.send_group_message(
+                message.group_id,
+                "This group is sending a lot of claims right now. Give it 2 minutes and try again 🙏",
+                reply_to_message_id=message.transport_message_id,
+            )
+            return None
+
         profile = GroupStyleProfile.model_validate(group.style_profile or {})
         updated_profile = self.style_profile_service.update_profile(profile, message)
         await self.group_repo.update_style_profile(group, updated_profile)
