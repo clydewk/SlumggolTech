@@ -143,7 +143,10 @@ class PipelineOrchestrator:
             )
             await self.transport.send_group_message(
                 message.group_id,
-                "Usage: /factcheck <claim> or reply to a message with /factcheck",
+                (
+                    "Usage: /factcheck <claim> or reply to a message and "
+                    "mention this bot."
+                ),
             )
             await self.session.commit()
             return None
@@ -288,10 +291,23 @@ def fallback_factcheck_command_reply(result: FactCheckResult) -> str:
 
 
 def build_factcheck_command_error_reply(exc: Exception) -> str:
-    if exc.__class__.__name__ == "AuthenticationError":
+    error_name = exc.__class__.__name__
+    error_text = str(exc).lower()
+
+    if error_name == "AuthenticationError":
         return (
             "Fact-check is temporarily unavailable because the OpenAI API key is invalid. "
             "Please update the bot's OpenAI credentials and try again."
+        )
+    if error_name == "RateLimitError":
+        if "insufficient_quota" in error_text or "quota" in error_text:
+            return (
+                "Fact-check is temporarily unavailable because the OpenAI quota is exhausted. "
+                "Please top up billing and try again."
+            )
+        return (
+            "Fact-check is temporarily unavailable because the OpenAI rate limit was hit. "
+            "Please try again shortly."
         )
     return (
         "Fact-check is temporarily unavailable because the upstream check failed. "

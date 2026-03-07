@@ -233,3 +233,132 @@ async def test_normalize_webhook_parses_factcheck_command() -> None:
     assert message.command_arg_text == "MOH confirmed that drinking salt water cures dengue"
     assert message.text == "MOH confirmed that drinking salt water cures dengue"
     assert message.text_simhash is not None
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_parses_reply_bot_mention_as_factcheck_command() -> None:
+    settings = AppSettings(
+        telegram_bot_token="test-token",
+        telegram_bot_username="isrealanot_bot",
+    )
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 4,
+                "message": {
+                    "message_id": 46,
+                    "date": 1_710_000_789,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 99},
+                    "text": "@isrealanot_bot",
+                    "reply_to_message": {
+                        "text": "MOH confirmed that drinking salt water cures dengue"
+                    },
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name == "factcheck"
+    assert message.command_arg_text == ""
+    assert message.text == ""
+    assert message.quoted_text == "MOH confirmed that drinking salt water cures dengue"
+    assert message.command_target_text() == "MOH confirmed that drinking salt water cures dengue"
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_ignores_reply_mentions_for_other_users() -> None:
+    settings = AppSettings(
+        telegram_bot_token="test-token",
+        telegram_bot_username="isrealanot_bot",
+    )
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 5,
+                "message": {
+                    "message_id": 47,
+                    "date": 1_710_000_790,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 99},
+                    "text": "@anotherbot",
+                    "reply_to_message": {
+                        "text": "MOH confirmed that drinking salt water cures dengue"
+                    },
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name is None
+    assert message.command_arg_text == ""
+    assert message.text == "@anotherbot"
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_ignores_bot_mention_without_reply() -> None:
+    settings = AppSettings(
+        telegram_bot_token="test-token",
+        telegram_bot_username="isrealanot_bot",
+    )
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 6,
+                "message": {
+                    "message_id": 48,
+                    "date": 1_710_000_791,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 99},
+                    "text": "@isrealanot_bot",
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name is None
+    assert message.command_arg_text == ""
+    assert message.text == "@isrealanot_bot"
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_resolves_bot_username_via_get_me_for_reply_mentions() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/bottest-token/getMe":
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"id": 42, "username": "isrealanot_bot"}},
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 7,
+                "message": {
+                    "message_id": 49,
+                    "date": 1_710_000_792,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 99},
+                    "text": "@isrealanot_bot",
+                    "reply_to_message": {"text": "Suspicious claim"},
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name == "factcheck"
+    assert message.command_target_text() == "Suspicious claim"

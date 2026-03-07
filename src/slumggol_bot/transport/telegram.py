@@ -15,6 +15,7 @@ _FACTCHECK_COMMAND_RE = re.compile(
     r"^/factcheck(?:@[A-Za-z0-9_]+)?(?:\s+(?P<args>.*))?$",
     re.IGNORECASE,
 )
+_BOT_MENTION_RE = re.compile(r"(?<!\S)@(?P<username>[A-Za-z0-9_]{5,32})\b")
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +26,8 @@ class TelegramTransport:
             base_url=settings.telegram_base_url,
             timeout=15.0,
         )
+        self._bot_username = _normalize_username(settings.telegram_bot_username)
+        self._bot_username_lookup_attempted = self._bot_username is not None
 
     async def normalize_webhook(self, payload: dict[str, Any]) -> list[NormalizedMessage]:
         return await self.normalize_update(payload)
@@ -139,6 +142,15 @@ class TelegramTransport:
         caption = message.get("caption", "") if isinstance(message.get("caption"), str) else ""
         quoted_text = self._extract_quoted_text(message.get("reply_to_message"))
         command_name, command_arg_text = self._parse_command(text)
+        if (
+            command_name is None
+            and await self._is_reply_factcheck_mention(
+                text=text,
+                reply_payload=message.get("reply_to_message"),
+            )
+        ):
+            command_name = "factcheck"
+            command_arg_text = ""
         normalized_text = command_arg_text if command_name == "factcheck" else text
 
         content_kind = ContentKind.TEXT
@@ -285,6 +297,50 @@ class TelegramTransport:
             return None, ""
         return "factcheck", (match.group("args") or "").strip()
 
+    async def _is_reply_factcheck_mention(
+        self,
+        *,
+        text: str,
+        reply_payload: Any,
+    ) -> bool:
+        if not isinstance(reply_payload, dict):
+            return False
+        mentioned_usernames = {
+            match.group("username").lower()
+            for match in _BOT_MENTION_RE.finditer(text)
+        }
+        if not mentioned_usernames:
+            return False
+
+        bot_username = await self._resolve_bot_username()
+        if bot_username is None:
+            return False
+        return bot_username in mentioned_usernames
+
+    async def _resolve_bot_username(self) -> str | None:
+        if self._bot_username is not None:
+            return self._bot_username
+        if self._bot_username_lookup_attempted:
+            return None
+
+        self._bot_username_lookup_attempted = True
+        if not self.settings.telegram_bot_token:
+            return None
+
+        try:
+            response = await self.client.get(self._api_path("getMe"))
+            response.raise_for_status()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to resolve Telegram bot username via getMe")
+            return None
+
+        payload = response.json()
+        username = payload.get("result", {}).get("username")
+        self._bot_username = _normalize_username(username)
+        if self._bot_username is None:
+            logger.warning("Telegram getMe response did not include bot username")
+        return self._bot_username
+
     def _parse_message_id(self, value: Any) -> int | None:
         if isinstance(value, int):
             return value
@@ -299,3 +355,10 @@ class AudioPayload(TypedDict):
     file_id: str
     mime_type: str
     duration_seconds: float
+
+
+def _normalize_username(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lstrip("@").lower()
+    return normalized or None
