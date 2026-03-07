@@ -1,0 +1,25 @@
+domains:
+  - domain: gov.sg
+    category: government
+    priority: 100
+  - domain: moh.gov.sg
+    category: public_health
+    priority: 100
+  - domain: hsa.gov.sg
+    category: public_health
+    priority: 95
+  - domain: spf.gov.sg
+    category: public_safety
+    priority: 100
+  - domain: scamshield.gov.sg
+    category: public_safety
+    priority: 95
+  - domain: mha.gov.sg
+    category: government
+    priority: 90
+  - domain: cna.asia
+    category: news
+    priority: 80
+  - domain: straitstimes.com
+    category: news
+    priority: 75
