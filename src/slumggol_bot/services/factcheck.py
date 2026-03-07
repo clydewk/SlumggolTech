@@ -12,7 +12,6 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from slumggol_bot.config import AppSettings
-from slumggol_bot.services.language import LanguageConflict, conflict_prompt_block
 from slumggol_bot.schemas import (
     EvidenceSource,
     FactCheckResult,
@@ -23,6 +22,7 @@ from slumggol_bot.schemas import (
 )
 from slumggol_bot.services.cache import HotClaimStore
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
+from slumggol_bot.services.language import LanguageConflict, conflict_prompt_block
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 logger = logging.getLogger(__name__)
@@ -524,6 +524,12 @@ class FactCheckService:
                 claim_key=result.claim_key,
                 result=result,
                 expires_at=datetime.now(UTC) + ttl,
+            )
+            await self.hot_claim_store.remember_claim(
+                hash_keys=message.available_hashes(),
+                claim_key=result.claim_key,
+                text_simhash=result.canonical_text_simhash,
+                ttl_seconds=max(int(ttl.total_seconds()), 1),
             )
         return result
 

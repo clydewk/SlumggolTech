@@ -117,6 +117,7 @@ class ExplodingFactCheckService:
         *,
         message: NormalizedMessage,  # noqa: ARG002
         style_profile: GroupStyleProfile,  # noqa: ARG002
+        language_conflict=None,  # noqa: ANN001, ARG002
     ):
         raise self.exc
 

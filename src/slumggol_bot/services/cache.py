@@ -27,6 +27,15 @@ class HotClaimStore(Protocol):
 
     async def replace(self, claims: list[HotClaim], ttl_seconds: int) -> None: ...
 
+    async def remember_claim(
+        self,
+        *,
+        hash_keys: list[str],
+        claim_key: str,
+        text_simhash: str | None,
+        ttl_seconds: int,
+    ) -> None: ...
+
 
 class HashObservationStore(Protocol):
     async def record(self, hash_keys: list[str], group_id: str) -> list[HashObservation]: ...
@@ -82,6 +91,31 @@ class InMemoryHotClaimStore:
             for claim in claims
             if claim.claim_key and claim.text_simhash
         }
+
+    async def remember_claim(
+        self,
+        *,
+        hash_keys: list[str],
+        claim_key: str,
+        text_simhash: str | None,
+        ttl_seconds: int,  # noqa: ARG002
+    ) -> None:
+        for hash_key in hash_keys:
+            self._claims[hash_key] = HotClaim(
+                hash_key=hash_key,
+                claim_key=claim_key,
+                text_simhash=text_simhash,
+                reason="recent_factcheck",
+                score=1.0,
+            )
+        if text_simhash:
+            self._simhash_claims[claim_key] = HotClaim(
+                hash_key=claim_key,
+                claim_key=claim_key,
+                text_simhash=text_simhash,
+                reason="recent_factcheck",
+                score=1.0,
+            )
 
 
 class RedisHotClaimStore:
@@ -144,6 +178,29 @@ class RedisHotClaimStore:
                 key = f"hot-simhash-band:{index}:{band_value}"
                 await self.redis.sadd(key, _hot_claim_member(claim.claim_key, claim.text_simhash))
                 await self.redis.expire(key, ttl_seconds)
+
+    async def remember_claim(
+        self,
+        *,
+        hash_keys: list[str],
+        claim_key: str,
+        text_simhash: str | None,
+        ttl_seconds: int,
+    ) -> None:
+        for hash_key in hash_keys:
+            await self.redis.set(
+                f"hot-hash:{hash_key}",
+                claim_key,
+                ex=ttl_seconds,
+            )
+        if not text_simhash:
+            return
+        for index, band_value in enumerate(
+            simhash_band_values(text_simhash, band_count=self.max_distance + 1)
+        ):
+            key = f"hot-simhash-band:{index}:{band_value}"
+            await self.redis.sadd(key, _hot_claim_member(claim_key, text_simhash))
+            await self.redis.expire(key, ttl_seconds)
 
 
 class InMemoryHashObservationStore:
