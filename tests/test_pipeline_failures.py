@@ -20,6 +20,13 @@ class FakeAuthenticationError(Exception):
 FakeAuthenticationError.__name__ = "AuthenticationError"
 
 
+class FakeRateLimitError(Exception):
+    pass
+
+
+FakeRateLimitError.__name__ = "RateLimitError"
+
+
 class FakeSession:
     def __init__(self) -> None:
         self.rolled_back = False
@@ -102,13 +109,16 @@ class FakeCandidateGate:
 
 
 class ExplodingFactCheckService:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
     async def assess_candidate(
         self,
         *,
         message: NormalizedMessage,  # noqa: ARG002
         style_profile: GroupStyleProfile,  # noqa: ARG002
     ):
-        raise FakeAuthenticationError("bad key")
+        raise self.exc
 
 
 class FakeStyleProfileService:
@@ -142,7 +152,7 @@ async def test_factcheck_command_returns_user_visible_error_on_auth_failure() ->
         text_simhash_observation_store=FakeTextSimHashObservationStore(),
         hot_claim_store=FakeHotClaimStore(),
         candidate_gate=FakeCandidateGate(),
-        factcheck_service=ExplodingFactCheckService(),
+        factcheck_service=ExplodingFactCheckService(FakeAuthenticationError("bad key")),
         style_profile_service=FakeStyleProfileService(),
     )
     orchestrator.group_repo = FakeGroupRepo()
@@ -153,3 +163,40 @@ async def test_factcheck_command_returns_user_visible_error_on_auth_failure() ->
     assert session.rolled_back is True
     assert transport.sent_messages
     assert "OpenAI API key is invalid" in transport.sent_messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_factcheck_command_returns_user_visible_error_on_quota_exhaustion() -> None:
+    session = FakeSession()
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-5264231879",
+        message_id="-5264231879:10",
+        sender_id="42",
+        content_kind=ContentKind.TEXT,
+        command_name="factcheck",
+        command_arg_text="MOH confirmed that drinking salt water cures dengue",
+        text="MOH confirmed that drinking salt water cures dengue",
+    )
+    transport = FakeTransport([message])
+    orchestrator = PipelineOrchestrator(
+        session=session,
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=ExplodingFactCheckService(
+            FakeRateLimitError("Error code: 429 - insufficient_quota")
+        ),
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    result = await orchestrator.process_payload({"message": {}})
+
+    assert result == {"processed": 1, "replied": 0}
+    assert session.rolled_back is True
+    assert transport.sent_messages
+    assert "OpenAI quota is exhausted" in transport.sent_messages[0][1]
