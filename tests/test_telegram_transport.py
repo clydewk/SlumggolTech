@@ -55,6 +55,7 @@ async def test_normalize_webhook_parses_group_text_message() -> None:
     message = messages[0]
     assert message.group_id == "-100123"
     assert message.message_id == "-100123:12"
+    assert message.transport_message_id == 12
     assert message.sender_id == "42"
     assert message.content_kind == ContentKind.TEXT
     assert message.text == "Claim text"
@@ -129,6 +130,32 @@ async def test_send_group_message_uses_telegram_send_message() -> None:
     ) as client:
         transport = TelegramTransport(settings, client=client)
         await transport.send_group_message("-100123", "Correction")
+
+
+@pytest.mark.asyncio
+async def test_send_group_message_supports_reply_to_message() -> None:
+    settings = AppSettings(telegram_bot_token="test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "chat_id": "-100123",
+            "text": "Correction",
+            "disable_web_page_preview": True,
+            "reply_to_message_id": 77,
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 2}})
+
+    async with httpx.AsyncClient(
+        base_url=settings.telegram_base_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        transport = TelegramTransport(settings, client=client)
+        await transport.send_group_message(
+            "-100123",
+            "Correction",
+            reply_to_message_id=77,
+        )
 
 
 @pytest.mark.asyncio

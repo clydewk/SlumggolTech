@@ -52,13 +52,19 @@ class FakeGroupRepo:
 class FakeTransport:
     def __init__(self, messages: list[NormalizedMessage]) -> None:
         self.messages = messages
-        self.sent_messages: list[tuple[str, str]] = []
+        self.sent_messages: list[tuple[str, str, int | None]] = []
 
     async def normalize_webhook(self, payload: dict) -> list[NormalizedMessage]:  # noqa: ARG002
         return self.messages
 
-    async def send_group_message(self, group_id: str, reply_text: str) -> None:
-        self.sent_messages.append((group_id, reply_text))
+    async def send_group_message(
+        self,
+        group_id: str,
+        reply_text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> None:
+        self.sent_messages.append((group_id, reply_text, reply_to_message_id))
 
 
 class FakeAnalyticsSink:

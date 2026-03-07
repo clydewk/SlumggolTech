@@ -154,7 +154,11 @@ class PipelineOrchestrator:
                 result.verdict.value,
                 result.confidence,
             )
-            await self.transport.send_group_message(message.group_id, result.reply_text)
+            await self.transport.send_group_message(
+                message.group_id,
+                result.reply_text,
+                reply_to_message_id=message.transport_message_id,
+            )
             await self.analytics_sink.write([reply_event(message, result)])
 
         await self.session.commit()

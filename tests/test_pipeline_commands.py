@@ -46,13 +46,19 @@ class FakeGroupRepo:
 
 class FakeTransport:
     def __init__(self) -> None:
-        self.sent_messages: list[tuple[str, str]] = []
+        self.sent_messages: list[tuple[str, str, int | None]] = []
 
     async def normalize_webhook(self, payload: dict) -> list[NormalizedMessage]:  # noqa: ARG002
         return []
 
-    async def send_group_message(self, group_id: str, reply_text: str) -> None:
-        self.sent_messages.append((group_id, reply_text))
+    async def send_group_message(
+        self,
+        group_id: str,
+        reply_text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> None:
+        self.sent_messages.append((group_id, reply_text, reply_to_message_id))
 
 
 class FakeAnalyticsSink:
@@ -165,6 +171,44 @@ async def test_factcheck_command_bypasses_gate_and_replies() -> None:
     assert transport.sent_messages
     assert "Verdict: false (95% confidence)" in transport.sent_messages[0][1]
     assert "This is not correct." in transport.sent_messages[0][1]
+    assert transport.sent_messages[0][2] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_quotes_original_message() -> None:
+    class AlwaysCandidateGate:
+        def decide(self, **kwargs) -> CandidateDecision:  # noqa: ANN003, ARG002
+            return CandidateDecision(candidate=True)
+
+    transport = FakeTransport()
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=AlwaysCandidateGate(),
+        factcheck_service=FakeFactCheckService(),
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:99",
+        transport_message_id=99,
+        sender_id="42",
+        content_kind=ContentKind.TEXT,
+        text="Forward this warning now",
+        text_sha256="hash-99",
+    )
+
+    result = await orchestrator.process_message(message)
+
+    assert result is not None
+    assert transport.sent_messages
+    assert transport.sent_messages[0][2] == 99
 
 
 def test_message_for_assessment_uses_quoted_text_for_factcheck_command() -> None:
