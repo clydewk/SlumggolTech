@@ -22,7 +22,7 @@ docker compose up --build
 4. If you also want Docker to expose the local API to Telegram with a Cloudflare quick tunnel and keep the Telegram webhook updated automatically, start the optional tunnel profile:
 
 ```bash
-docker compose --profile tunnel up --build -d
+docker compose --profile tunnel up --build -d --remove-orphans
 ```
 
 5. Or, if you prefer to run only Postgres and Redis in Docker, start local dependencies:
