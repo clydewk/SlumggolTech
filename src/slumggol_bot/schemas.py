@@ -43,6 +43,7 @@ class NormalizedMessage(BaseModel):
     occurred_at: datetime
     group_id: str
     message_id: str
+    transport_message_id: int | None = None
     sender_id: str
     content_kind: ContentKind
     command_name: str | None = None
