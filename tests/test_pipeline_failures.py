@@ -120,6 +120,14 @@ class ExplodingFactCheckService:
     ):
         raise self.exc
 
+    async def answer_followup(
+        self,
+        *,
+        message: NormalizedMessage,  # noqa: ARG002
+        style_profile: GroupStyleProfile,  # noqa: ARG002
+    ) -> str:
+        raise self.exc
+
 
 class FakeStyleProfileService:
     def update_profile(

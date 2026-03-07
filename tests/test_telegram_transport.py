@@ -362,3 +362,74 @@ async def test_normalize_webhook_resolves_bot_username_via_get_me_for_reply_ment
     message = messages[0]
     assert message.command_name == "factcheck"
     assert message.command_target_text() == "Suspicious claim"
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_parses_reply_to_bot_message_as_followup() -> None:
+    settings = AppSettings(
+        telegram_bot_token="test-token",
+        telegram_bot_username="isrealanot_bot",
+    )
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 8,
+                "message": {
+                    "message_id": 50,
+                    "date": 1_710_000_793,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 100},
+                    "text": "What about these other reasons?",
+                    "reply_to_message": {
+                        "text": "Verdict: false (95% confidence)",
+                        "from": {
+                            "id": 42,
+                            "is_bot": True,
+                            "username": "isrealanot_bot",
+                        },
+                    },
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name == "followup"
+    assert message.text == "What about these other reasons?"
+    assert message.quoted_text == "Verdict: false (95% confidence)"
+
+
+@pytest.mark.asyncio
+async def test_normalize_webhook_ignores_reply_to_other_bot_for_followup() -> None:
+    settings = AppSettings(
+        telegram_bot_token="test-token",
+        telegram_bot_username="isrealanot_bot",
+    )
+    async with httpx.AsyncClient(base_url=settings.telegram_base_url) as client:
+        transport = TelegramTransport(settings, client=client)
+        messages = await transport.normalize_webhook(
+            {
+                "update_id": 9,
+                "message": {
+                    "message_id": 51,
+                    "date": 1_710_000_794,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                    "from": {"id": 100},
+                    "text": "What about these other reasons?",
+                    "reply_to_message": {
+                        "text": "Verdict: false (95% confidence)",
+                        "from": {
+                            "id": 333,
+                            "is_bot": True,
+                            "username": "anotherbot",
+                        },
+                    },
+                },
+            }
+        )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.command_name is None
+    assert message.text == "What about these other reasons?"
