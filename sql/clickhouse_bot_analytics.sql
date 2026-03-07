@@ -312,7 +312,7 @@ SELECT
     risk_level,
     actionability,
     sum(reply_count) AS reply_count,
-    sum(confidence * reply_count) AS confidence_sum
+    sum(confidence * bot_analytics.reply_events.reply_count) AS confidence_sum
 FROM bot_analytics.reply_events
 GROUP BY day, group_id, verdict, claim_category, risk_level, actionability;
 
