@@ -48,8 +48,10 @@ class FakeGroupRepo:
 class FakeTransport:
     def __init__(self) -> None:
         self.sent_messages: list[tuple[str, str, int | None, dict | None]] = []
+        self.sent_message_ids: list[int] = []
         self.answered_callbacks: list[tuple[str, str | None]] = []
         self.edited_markups: list[tuple[str, int, dict | None]] = []
+        self._next_message_id = 1000
 
     async def normalize_webhook(self, payload: dict) -> list[NormalizedMessage]:  # noqa: ARG002
         return []
@@ -61,8 +63,11 @@ class FakeTransport:
         *,
         reply_to_message_id: int | None = None,
         reply_markup: dict | None = None,
-    ) -> None:
+    ) -> int | None:
         self.sent_messages.append((group_id, reply_text, reply_to_message_id, reply_markup))
+        self._next_message_id += 1
+        self.sent_message_ids.append(self._next_message_id)
+        return self._next_message_id
 
     async def answer_callback_query(
         self,
@@ -356,6 +361,154 @@ async def test_translate_lang_callback_sends_translation_once() -> None:
     assert transport.sent_messages[0][3] is not None
     assert transport.answered_callbacks[0] == ("def", "Translated to 中文")
     assert transport.answered_callbacks[1] == ("def", "Already translated to 中文.")
+
+
+@pytest.mark.asyncio
+async def test_translate_lang_dedupes_across_translation_chain_root() -> None:
+    class ChainFactCheckService(FakeFactCheckService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.translate_calls: list[str] = []
+
+        async def translate_text(
+            self,
+            *,
+            text: str,  # noqa: ARG002
+            target_language: str,
+        ) -> TranslationResult:
+            self.translate_calls.append(target_language)
+            if target_language == "zh":
+                return TranslationResult(
+                    source_language="en",
+                    target_language="zh",
+                    needs_translation=True,
+                    translated_text="这是翻译后的版本。",
+                )
+            if target_language == "ms":
+                return TranslationResult(
+                    source_language="zh",
+                    target_language="ms",
+                    needs_translation=True,
+                    translated_text="Ini versi terjemahan.",
+                )
+            return TranslationResult(
+                source_language="other",
+                target_language=target_language,  # type: ignore[arg-type]
+                needs_translation=True,
+                translated_text="Translated",
+            )
+
+    transport = FakeTransport()
+    factcheck_service = ChainFactCheckService()
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=factcheck_service,
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+    await orchestrator.translation_state_store.remember_message_root(
+        group_id="-100123",
+        message_id=700,
+        root_message_id=700,
+    )
+    await orchestrator.translation_state_store.mark_language(
+        group_id="-100123",
+        root_message_id=700,
+        language_code="en",
+    )
+
+    to_chinese = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:to-zh",
+        transport_message_id=700,
+        sender_id="111",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_lang",
+        command_arg_text="zh",
+        callback_query_id="to-zh",
+        callback_data="translate:lang:zh",
+        text="This claim is false.",
+    )
+    await orchestrator.process_message(to_chinese)
+
+    chinese_message_id = transport.sent_message_ids[0]
+    to_malay = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:to-ms",
+        transport_message_id=chinese_message_id,
+        sender_id="222",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_lang",
+        command_arg_text="ms",
+        callback_query_id="to-ms",
+        callback_data="translate:lang:ms",
+        text="这是翻译后的版本。",
+    )
+    await orchestrator.process_message(to_malay)
+
+    malay_message_id = transport.sent_message_ids[1]
+    blocked_english = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:block-en",
+        transport_message_id=chinese_message_id,
+        sender_id="333",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_lang",
+        command_arg_text="en",
+        callback_query_id="block-en",
+        callback_data="translate:lang:en",
+        text="这是翻译后的版本。",
+    )
+    blocked_chinese = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:block-zh",
+        transport_message_id=malay_message_id,
+        sender_id="444",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_lang",
+        command_arg_text="zh",
+        callback_query_id="block-zh",
+        callback_data="translate:lang:zh",
+        text="Ini versi terjemahan.",
+    )
+    blocked_malay = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:callback:block-ms",
+        transport_message_id=700,
+        sender_id="555",
+        content_kind=ContentKind.TEXT,
+        command_name="translate_lang",
+        command_arg_text="ms",
+        callback_query_id="block-ms",
+        callback_data="translate:lang:ms",
+        text="This claim is false.",
+    )
+    await orchestrator.process_message(blocked_english)
+    await orchestrator.process_message(blocked_chinese)
+    await orchestrator.process_message(blocked_malay)
+
+    assert len(transport.sent_messages) == 2
+    assert transport.sent_messages[0][1] == "这是翻译后的版本。"
+    assert transport.sent_messages[1][1] == "Ini versi terjemahan."
+    assert factcheck_service.translate_calls == ["zh", "ms"]
+    assert transport.answered_callbacks == [
+        ("to-zh", "Translated to 中文"),
+        ("to-ms", "Translated to Bahasa Melayu"),
+        ("block-en", "Already translated to English."),
+        ("block-zh", "Already translated to 中文."),
+        ("block-ms", "Already translated to Bahasa Melayu."),
+    ]
 
 
 @pytest.mark.asyncio

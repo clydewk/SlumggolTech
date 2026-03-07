@@ -15,7 +15,7 @@ class TransportAdapter(Protocol):
         *,
         reply_to_message_id: int | None = None,
         reply_markup: dict | None = None,
-    ) -> None: ...
+    ) -> int | None: ...
 
     async def answer_callback_query(
         self,

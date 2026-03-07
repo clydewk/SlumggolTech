@@ -131,7 +131,9 @@ async def test_send_group_message_uses_telegram_send_message() -> None:
         transport=httpx.MockTransport(handler),
     ) as client:
         transport = TelegramTransport(settings, client=client)
-        await transport.send_group_message("-100123", "Correction")
+        message_id = await transport.send_group_message("-100123", "Correction")
+
+    assert message_id == 1
 
 
 @pytest.mark.asyncio
@@ -153,11 +155,13 @@ async def test_send_group_message_supports_reply_to_message() -> None:
         transport=httpx.MockTransport(handler),
     ) as client:
         transport = TelegramTransport(settings, client=client)
-        await transport.send_group_message(
+        message_id = await transport.send_group_message(
             "-100123",
             "Correction",
             reply_to_message_id=77,
         )
+
+    assert message_id == 2
 
 
 @pytest.mark.asyncio
@@ -179,11 +183,13 @@ async def test_send_group_message_supports_reply_markup() -> None:
         transport=httpx.MockTransport(handler),
     ) as client:
         transport = TelegramTransport(settings, client=client)
-        await transport.send_group_message(
+        message_id = await transport.send_group_message(
             "-100123",
             "Correction",
             reply_markup={"inline_keyboard": [[{"text": "Translate", "callback_data": "x"}]]},
         )
+
+    assert message_id == 3
 
 
 @pytest.mark.asyncio

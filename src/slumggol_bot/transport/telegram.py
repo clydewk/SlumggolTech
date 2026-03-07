@@ -118,9 +118,9 @@ class TelegramTransport:
         *,
         reply_to_message_id: int | None = None,
         reply_markup: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> int | None:
         if not self.settings.telegram_bot_token:
-            return
+            return None
 
         payload: dict[str, Any] = {
             "chat_id": group_id,
@@ -137,6 +137,9 @@ class TelegramTransport:
             json=payload,
         )
         response.raise_for_status()
+        result = response.json().get("result", {})
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        return self._parse_message_id(message_id)
 
     async def answer_callback_query(
         self,

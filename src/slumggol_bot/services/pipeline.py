@@ -31,6 +31,7 @@ from slumggol_bot.services.translation import (
     LANGUAGE_LABELS,
     InMemoryTranslationStateStore,
     TranslationStateStore,
+    normalize_language_code,
     translate_language_markup,
     translate_menu_markup,
 )
@@ -152,11 +153,11 @@ class PipelineOrchestrator:
         if message.command_name == "followup":
             followup_question = message.primary_text.strip()
             if not followup_question:
-                await self.transport.send_group_message(
-                    message.group_id,
-                    "Reply to the bot with a follow-up question in text.",
+                await self._send_bot_reply(
+                    group_id=message.group_id,
+                    reply_text="Reply to the bot with a follow-up question in text.",
                     reply_to_message_id=message.transport_message_id,
-                    reply_markup=translate_menu_markup(),
+                    language_code="en",
                 )
                 await self.session.commit()
                 return None
@@ -164,11 +165,10 @@ class PipelineOrchestrator:
                 message=message,
                 style_profile=updated_profile,
             )
-            await self.transport.send_group_message(
-                message.group_id,
-                followup_answer,
+            await self._send_bot_reply(
+                group_id=message.group_id,
+                reply_text=followup_answer,
                 reply_to_message_id=message.transport_message_id,
-                reply_markup=translate_menu_markup(),
             )
             await self.session.commit()
             return None
@@ -180,14 +180,14 @@ class PipelineOrchestrator:
                 message.group_id,
                 message.message_id,
             )
-            await self.transport.send_group_message(
-                message.group_id,
-                (
+            await self._send_bot_reply(
+                group_id=message.group_id,
+                reply_text=(
                     "Usage: /factcheck <claim> or reply to a message and "
                     "mention this bot."
                 ),
                 reply_to_message_id=message.transport_message_id,
-                reply_markup=translate_menu_markup(),
+                language_code="en",
             )
             await self.session.commit()
             return None
@@ -233,11 +233,11 @@ class PipelineOrchestrator:
                 result.verdict.value,
                 result.confidence,
             )
-            await self.transport.send_group_message(
-                message.group_id,
-                reply_text,
+            await self._send_bot_reply(
+                group_id=message.group_id,
+                reply_text=reply_text,
                 reply_to_message_id=message.transport_message_id,
-                reply_markup=translate_menu_markup(),
+                language_code=normalize_language_code(result.reply_language),
             )
             await self.analytics_sink.write([reply_event(message, result)])
         elif should_reply(result):
@@ -254,16 +254,47 @@ class PipelineOrchestrator:
                 type("_V", (), {"text": result.reply_text})()
             ]
             for version in versions_to_send:
-                await self.transport.send_group_message(
-                    message.group_id,
-                    version.text,
+                await self._send_bot_reply(
+                    group_id=message.group_id,
+                    reply_text=version.text,
                     reply_to_message_id=message.transport_message_id,
-                    reply_markup=translate_menu_markup(),
+                    language_code=normalize_language_code(result.reply_language),
                 )
             await self.analytics_sink.write([reply_event(message, result)])
 
         await self.session.commit()
         return result
+
+    async def _send_bot_reply(
+        self,
+        *,
+        group_id: str,
+        reply_text: str,
+        reply_to_message_id: int | None,
+        root_message_id: int | None = None,
+        language_code: str | None = None,
+    ) -> int | None:
+        sent_message_id = await self.transport.send_group_message(
+            group_id,
+            reply_text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=translate_menu_markup(),
+        )
+        if sent_message_id is None:
+            return None
+        root_id = root_message_id or sent_message_id
+        await self.translation_state_store.remember_message_root(
+            group_id=group_id,
+            message_id=sent_message_id,
+            root_message_id=root_id,
+        )
+        if language_code in LANGUAGE_LABELS:
+            await self.translation_state_store.mark_language(
+                group_id=group_id,
+                root_message_id=root_id,
+                language_code=language_code,
+            )
+        return sent_message_id
 
     async def _handle_translation_interaction(self, message: NormalizedMessage) -> None:
         callback_query_id = message.callback_query_id
@@ -297,12 +328,16 @@ class PipelineOrchestrator:
             )
             return
 
-        claimed = await self.translation_state_store.claim_language(
+        root_message_id = await self.translation_state_store.resolve_root_message_id(
             group_id=message.group_id,
-            source_message_id=source_message_id,
+            message_id=source_message_id,
+        )
+        already_translated = await self.translation_state_store.has_language(
+            group_id=message.group_id,
+            root_message_id=root_message_id,
             language_code=target_language,
         )
-        if not claimed:
+        if already_translated:
             await self.transport.answer_callback_query(
                 callback_query_id,
                 text=f"Already translated to {LANGUAGE_LABELS[target_language]}.",
@@ -321,7 +356,20 @@ class PipelineOrchestrator:
             text=source_text,
             target_language=target_language,
         )
+        source_language = normalize_language_code(translation.source_language)
+        if source_language in LANGUAGE_LABELS:
+            await self.translation_state_store.mark_language(
+                group_id=message.group_id,
+                root_message_id=root_message_id,
+                language_code=source_language,
+            )
         if not translation.needs_translation or not translation.translated_text.strip():
+            if target_language in LANGUAGE_LABELS:
+                await self.translation_state_store.mark_language(
+                    group_id=message.group_id,
+                    root_message_id=root_message_id,
+                    language_code=target_language,
+                )
             await self.transport.answer_callback_query(
                 callback_query_id,
                 text=(
@@ -331,11 +379,23 @@ class PipelineOrchestrator:
             )
             return
 
-        await self.transport.send_group_message(
-            message.group_id,
-            translation.translated_text.strip(),
+        claimed = await self.translation_state_store.claim_language(
+            group_id=message.group_id,
+            root_message_id=root_message_id,
+            language_code=target_language,
+        )
+        if not claimed:
+            await self.transport.answer_callback_query(
+                callback_query_id,
+                text=f"Already translated to {LANGUAGE_LABELS[target_language]}.",
+            )
+            return
+
+        await self._send_bot_reply(
+            group_id=message.group_id,
+            reply_text=translation.translated_text.strip(),
             reply_to_message_id=source_message_id,
-            reply_markup=translate_menu_markup(),
+            root_message_id=root_message_id,
         )
         await self.transport.answer_callback_query(
             callback_query_id,
@@ -359,11 +419,11 @@ class PipelineOrchestrator:
             await rollback()
         if message.command_name == "factcheck":
             try:
-                await self.transport.send_group_message(
-                    message.group_id,
-                    build_factcheck_command_error_reply(exc),
+                await self._send_bot_reply(
+                    group_id=message.group_id,
+                    reply_text=build_factcheck_command_error_reply(exc),
                     reply_to_message_id=message.transport_message_id,
-                    reply_markup=translate_menu_markup(),
+                    language_code="en",
                 )
             except Exception:  # noqa: BLE001
                 logger.exception(
@@ -373,11 +433,11 @@ class PipelineOrchestrator:
                 )
         elif message.command_name == "followup":
             try:
-                await self.transport.send_group_message(
-                    message.group_id,
-                    "Follow-up answer is temporarily unavailable. Please try again.",
+                await self._send_bot_reply(
+                    group_id=message.group_id,
+                    reply_text="Follow-up answer is temporarily unavailable. Please try again.",
                     reply_to_message_id=message.transport_message_id,
-                    reply_markup=translate_menu_markup(),
+                    language_code="en",
                 )
             except Exception:  # noqa: BLE001
                 logger.exception(

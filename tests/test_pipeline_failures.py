@@ -60,6 +60,7 @@ class FakeTransport:
     def __init__(self, messages: list[NormalizedMessage]) -> None:
         self.messages = messages
         self.sent_messages: list[tuple[str, str, int | None, dict | None]] = []
+        self._next_message_id = 2000
 
     async def normalize_webhook(self, payload: dict) -> list[NormalizedMessage]:  # noqa: ARG002
         return self.messages
@@ -71,8 +72,10 @@ class FakeTransport:
         *,
         reply_to_message_id: int | None = None,
         reply_markup: dict | None = None,
-    ) -> None:
+    ) -> int | None:
         self.sent_messages.append((group_id, reply_text, reply_to_message_id, reply_markup))
+        self._next_message_id += 1
+        return self._next_message_id
 
     async def answer_callback_query(
         self,
