@@ -26,6 +26,7 @@ from slumggol_bot.services.factcheck import FactCheckService
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.language import detect_conflict
+from slumggol_bot.services.rate_limit import RateLimiter
 from slumggol_bot.services.style_profiles import StyleProfileService
 from slumggol_bot.services.translation import (
     LANGUAGE_LABELS,
@@ -54,6 +55,7 @@ class PipelineOrchestrator:
         factcheck_service: FactCheckService,
         style_profile_service: StyleProfileService,
         translation_state_store: TranslationStateStore | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.session = session
         self.transport = transport
@@ -65,6 +67,7 @@ class PipelineOrchestrator:
         self.factcheck_service = factcheck_service
         self.style_profile_service = style_profile_service
         self.translation_state_store = translation_state_store or InMemoryTranslationStateStore()
+        self.rate_limiter = rate_limiter
         self.group_repo = GroupRepository(session)
         self.claim_cache_repo = ClaimCacheRepository(session)
 
@@ -90,6 +93,31 @@ class PipelineOrchestrator:
             return None
 
         group = await self.group_repo.get_or_create(external_id=message.group_id)
+        if self.rate_limiter is not None:
+            if not await self.rate_limiter.user_allowed(message.sender_id, message.group_id):
+                await self._send_bot_reply(
+                    group_id=message.group_id,
+                    reply_text=(
+                        "Eh, slow down lah 🙏 You sending too many messages. "
+                        "Try again in a bit."
+                    ),
+                    reply_to_message_id=message.transport_message_id,
+                    language_code="en",
+                )
+                return None
+
+            if not await self.rate_limiter.group_allowed(message.group_id):
+                await self._send_bot_reply(
+                    group_id=message.group_id,
+                    reply_text=(
+                        "This group is sending a lot of claims right now. "
+                        "Give it 2 minutes and try again 🙏"
+                    ),
+                    reply_to_message_id=message.transport_message_id,
+                    language_code="en",
+                )
+                return None
+
         profile = GroupStyleProfile.model_validate(group.style_profile or {})
         updated_profile = self.style_profile_service.update_profile(profile, message)
         await self.group_repo.update_style_profile(group, updated_profile)

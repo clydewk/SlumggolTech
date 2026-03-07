@@ -35,6 +35,7 @@ from slumggol_bot.services.factcheck import (
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.outbreak import OutbreakService
 from slumggol_bot.services.pipeline import PipelineOrchestrator
+from slumggol_bot.services.rate_limit import RateLimiter
 from slumggol_bot.services.style_profiles import StyleProfileService
 from slumggol_bot.services.translation import (
     InMemoryTranslationStateStore,
@@ -127,6 +128,7 @@ def build_pipeline_orchestrator(
         translation_state_store=(
             RedisTranslationStateStore(redis) if redis else InMemoryTranslationStateStore()
         ),
+        rate_limiter=RateLimiter(redis) if redis else None,
     )
 
 
