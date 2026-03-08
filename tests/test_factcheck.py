@@ -638,7 +638,7 @@ async def test_openai_followup_uses_task_specific_reasoning_and_verbosity() -> N
     )
 
     assert answer == "Here are the additional reasons and evidence."
-    assert fake_responses.calls[0]["reasoning"] == {"effort": "minimal"}
+    assert fake_responses.calls[0]["reasoning"] == {"effort": "low"}
     assert fake_responses.calls[0]["text"] == {"verbosity": "high"}
 
 
@@ -674,6 +674,58 @@ async def test_openai_translation_uses_task_specific_reasoning_and_verbosity() -
     assert translation.translated_text == "这是翻译后的版本。"
     assert fake_responses.calls[0]["reasoning"] == {"effort": "minimal"}
     assert fake_responses.calls[0]["text"]["verbosity"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_openai_factcheck_upgrades_minimal_reasoning_when_web_search_enabled() -> None:
+    settings = AppSettings(
+        openai_api_key="test-key",
+        openai_reasoning_effort="medium",
+        openai_factcheck_reasoning_effort="minimal",
+    )
+    client = OpenAIFactCheckClient(settings)
+    fake_responses = FakeResponsesClient(
+        [
+            FakeResponse(
+                response_id="resp_complete",
+                status="completed",
+                output_text=(
+                    '{"needs_reply":true,"verdict":"false","confidence":0.99,'
+                    '"canonical_claim_en":"MOH confirmed that drinking salt water cures dengue.",'
+                    '"reply_language":"English",'
+                    '"reply_text":"This is false. There is no official guidance '
+                    'saying salt water cures dengue.",'
+                    '"reply_versions":[],'
+                    '"reason_codes":["public_health_claim","official_sources_contradict"],'
+                    '"claim_category":"public_health",'
+                    '"risk_level":"high",'
+                    '"actionability":"countermessage_ready",'
+                    '"evidence":['
+                    '{"title":"MOH","url":"https://www.moh.gov.sg/example","domain":"moh.gov.sg","published_at":"2024-01-01"},'
+                    '{"title":"gov.sg","url":"https://www.gov.sg/example","domain":"gov.sg","published_at":"2024-01-02"}'
+                    ']}'
+                ),
+            ),
+        ]
+    )
+    client.client = SimpleNamespace(responses=fake_responses)
+
+    await client.fact_check(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="-5264231879",
+            message_id="-5264231879:46",
+            sender_id="123",
+            content_kind=ContentKind.TEXT,
+            text="MOH confirmed that drinking salt water cures dengue",
+        ),
+        style_profile=GroupStyleProfile(),
+        registry=FakeRegistry(),
+        allow_web_search=True,
+        style_profile_service=StyleProfileService(),
+    )
+
+    assert fake_responses.calls[0]["reasoning"] == {"effort": "low"}
 
 
 @pytest.mark.asyncio

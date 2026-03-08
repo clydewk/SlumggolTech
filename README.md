@@ -45,11 +45,9 @@ Slumggol is designed to meet people where that happens:
 
 ## Screenshots
 
-<!-- Replace the remaining placeholders with real screenshots before final submission. -->
-
-| Telegram fact-check thread | Analytics dashboard | Translation UX |
-| --- | --- | --- |
-| ![Telegram fact-check placeholder](docs/screenshots/telegram-thread-placeholder.svg) | ![Analytics dashboard](dashboard.jpg) | ![Translation UX placeholder](docs/screenshots/translation-placeholder.svg) |
+| Telegram fact-check thread | Analytics dashboard |
+| --- | --- |
+| ![Telegram fact-check thread](convo.jpg) | ![Analytics dashboard](dashboard.jpg) |
 
 ## Why ClickHouse is central
 
