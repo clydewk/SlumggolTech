@@ -42,6 +42,7 @@ from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.outbreak import OutbreakService
 from slumggol_bot.services.pipeline import PipelineOrchestrator
 from slumggol_bot.services.rate_limit import RateLimiter
+from slumggol_bot.services.sealion import SeaLionLanguageAssistClient
 from slumggol_bot.services.style_profiles import StyleProfileService
 from slumggol_bot.services.translation import (
     InMemoryTranslationStateStore,
@@ -118,6 +119,9 @@ def build_pipeline_orchestrator(
     redis = app.state.redis
     resolved_transport = transport or build_transport(settings)
     hot_claim_store = build_hot_claim_store(settings, redis)
+    language_assist_provider = None
+    if settings.sealion_enabled and settings.sealion_api_key:
+        language_assist_provider = SeaLionLanguageAssistClient(settings)
     return PipelineOrchestrator(
         session=session,
         transport=resolved_transport,
@@ -142,6 +146,7 @@ def build_pipeline_orchestrator(
             hot_claim_store=hot_claim_store,
             style_profile_service=StyleProfileService(),
             text_simhash_max_distance=settings.text_simhash_max_distance,
+            language_assist_provider=language_assist_provider,
         ),
         style_profile_service=StyleProfileService(),
         translation_state_store=(

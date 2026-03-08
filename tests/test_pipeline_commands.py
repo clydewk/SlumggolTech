@@ -126,6 +126,45 @@ class FakeHotClaimStore:
         return None
 
 
+class FakeRateLimiter:
+    def __init__(
+        self,
+        *,
+        user_allowed: bool = True,
+        group_allowed: bool = True,
+        user_notice_results: list[bool] | None = None,
+        group_notice_results: list[bool] | None = None,
+    ) -> None:
+        self._user_allowed = user_allowed
+        self._group_allowed = group_allowed
+        self._user_notice_results = list(user_notice_results or [True])
+        self._group_notice_results = list(group_notice_results or [True])
+        self.user_allowed_calls: list[tuple[str, str]] = []
+        self.group_allowed_calls: list[str] = []
+        self.user_notice_calls: list[tuple[str, str]] = []
+        self.group_notice_calls: list[str] = []
+
+    async def user_allowed(self, sender_id: str, group_id: str) -> bool:
+        self.user_allowed_calls.append((sender_id, group_id))
+        return self._user_allowed
+
+    async def group_allowed(self, group_id: str) -> bool:
+        self.group_allowed_calls.append(group_id)
+        return self._group_allowed
+
+    async def user_notice_allowed(self, sender_id: str, group_id: str) -> bool:
+        self.user_notice_calls.append((sender_id, group_id))
+        if len(self._user_notice_results) > 1:
+            return self._user_notice_results.pop(0)
+        return self._user_notice_results[0]
+
+    async def group_notice_allowed(self, group_id: str) -> bool:
+        self.group_notice_calls.append(group_id)
+        if len(self._group_notice_results) > 1:
+            return self._group_notice_results.pop(0)
+        return self._group_notice_results[0]
+
+
 class FakeCandidateGate:
     def decide(self, **kwargs) -> CandidateDecision:  # noqa: ANN003, ARG002
         return CandidateDecision(candidate=False)
@@ -205,6 +244,21 @@ class FakeStyleProfileService:
         )
 
 
+def build_text_message(**overrides) -> NormalizedMessage:
+    payload = {
+        "occurred_at": datetime.now(UTC),
+        "group_id": "-100123",
+        "message_id": "-100123:22",
+        "transport_message_id": 22,
+        "sender_id": "42",
+        "content_kind": ContentKind.TEXT,
+        "text": "Breaking News",
+        "text_sha256": "hash-1",
+    }
+    payload.update(overrides)
+    return NormalizedMessage(**payload)
+
+
 @pytest.mark.asyncio
 async def test_factcheck_command_bypasses_gate_and_replies() -> None:
     transport = FakeTransport()
@@ -247,6 +301,79 @@ async def test_factcheck_command_bypasses_gate_and_replies() -> None:
     assert "This is not correct." in transport.sent_messages[0][1]
     assert transport.sent_messages[0][2] == 22
     assert transport.sent_messages[0][3] is not None
+
+
+@pytest.mark.asyncio
+async def test_user_rate_limit_warning_is_sent_once_per_window() -> None:
+    transport = FakeTransport()
+    factcheck_service = FakeFactCheckService()
+    rate_limiter = FakeRateLimiter(
+        user_allowed=False,
+        user_notice_results=[True, False],
+    )
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=factcheck_service,
+        style_profile_service=FakeStyleProfileService(),
+        rate_limiter=rate_limiter,
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    await orchestrator.process_message(build_text_message())
+    await orchestrator.process_message(
+        build_text_message(message_id="-100123:23", transport_message_id=23)
+    )
+
+    assert len(transport.sent_messages) == 1
+    assert "Eh, slow down lah" in transport.sent_messages[0][1]
+    assert factcheck_service.messages == []
+    assert rate_limiter.user_notice_calls == [("42", "-100123"), ("42", "-100123")]
+    assert rate_limiter.group_allowed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_group_rate_limit_warning_failures_are_swallowed() -> None:
+    class FailingTransport(FakeTransport):
+        async def send_group_message(
+            self,
+            group_id: str,
+            reply_text: str,
+            *,
+            reply_to_message_id: int | None = None,
+            reply_markup: dict | None = None,
+        ) -> int | None:
+            raise RuntimeError("telegram send failed")
+
+    transport = FailingTransport()
+    rate_limiter = FakeRateLimiter(
+        user_allowed=True,
+        group_allowed=False,
+        group_notice_results=[True],
+    )
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=FakeCandidateGate(),
+        factcheck_service=FakeFactCheckService(),
+        style_profile_service=FakeStyleProfileService(),
+        rate_limiter=rate_limiter,
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    result = await orchestrator.process_message(build_text_message())
+
+    assert result is None
+    assert rate_limiter.group_notice_calls == ["-100123"]
 
 
 @pytest.mark.asyncio

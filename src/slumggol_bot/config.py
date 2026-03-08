@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+OpenAIReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh"]
+OpenAITextVerbosity = Literal["low", "medium", "high"]
+OpenAITask = Literal["factcheck", "followup", "translation"]
 
 
 class AppSettings(BaseSettings):
@@ -20,6 +25,20 @@ class AppSettings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4"
     openai_transcribe_model: str = "gpt-4o-transcribe"
+    openai_reasoning_effort: OpenAIReasoningEffort = "medium"
+    openai_factcheck_reasoning_effort: OpenAIReasoningEffort | None = None
+    openai_followup_reasoning_effort: OpenAIReasoningEffort | None = None
+    openai_translation_reasoning_effort: OpenAIReasoningEffort | None = None
+    openai_verbosity: OpenAITextVerbosity = "medium"
+    openai_factcheck_verbosity: OpenAITextVerbosity | None = None
+    openai_followup_verbosity: OpenAITextVerbosity | None = None
+    openai_translation_verbosity: OpenAITextVerbosity | None = None
+    sealion_enabled: bool = False
+    sealion_api_key: str = ""
+    sealion_base_url: str = "https://api.sea-lion.ai/v1"
+    sealion_model: str = "aisingapore/Gemma-SEA-LION-v4-27B-IT"
+    sealion_assist_on_factcheck_command: bool = True
+    sealion_assist_on_forwarded_messages: bool = True
 
     telegram_base_url: str = "https://api.telegram.org"
     telegram_bot_token: str = ""
@@ -81,3 +100,33 @@ class AppSettings(BaseSettings):
     def estimate_transcription_cost(self, *, seconds: float) -> float:
         minutes = max(seconds / 60.0, 0.0)
         return minutes * self.transcription_cost_per_minute
+
+    def openai_reasoning(self, *, task: OpenAITask) -> dict[str, OpenAIReasoningEffort]:
+        return {"effort": self._reasoning_effort_for(task)}
+
+    def openai_text_config(
+        self,
+        *,
+        task: OpenAITask,
+        format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        text_config: dict[str, Any] = {"verbosity": self._verbosity_for(task)}
+        if format is not None:
+            text_config["format"] = format
+        return text_config
+
+    def _reasoning_effort_for(self, task: OpenAITask) -> OpenAIReasoningEffort:
+        override = {
+            "factcheck": self.openai_factcheck_reasoning_effort,
+            "followup": self.openai_followup_reasoning_effort,
+            "translation": self.openai_translation_reasoning_effort,
+        }[task]
+        return override or self.openai_reasoning_effort
+
+    def _verbosity_for(self, task: OpenAITask) -> OpenAITextVerbosity:
+        override = {
+            "factcheck": self.openai_factcheck_verbosity,
+            "followup": self.openai_followup_verbosity,
+            "translation": self.openai_translation_verbosity,
+        }[task]
+        return override or self.openai_verbosity

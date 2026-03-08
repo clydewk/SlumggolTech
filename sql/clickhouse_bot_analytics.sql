@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS bot_analytics.usage_events (
     message_id String,
     claim_key Nullable(String),
     model LowCardinality(String),
+    auxiliary_model Nullable(String),
     claim_category LowCardinality(String),
     risk_level LowCardinality(String),
     actionability LowCardinality(String),

@@ -27,6 +27,7 @@ from slumggol_bot.schemas import (
 from slumggol_bot.services.cache import HotClaimStore
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.language import LanguageConflict, conflict_prompt_block
+from slumggol_bot.services.sealion import LanguageAssistProvider, SeaLionLanguageAssist
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ class FactCheckResponsePayload(BaseModel):
     canonical_claim_en: str
     reply_language: str = "English"
     reply_text: str = ""
-    reply_versions: list[dict[str, str]] = Field(default_factory=list)  # NEW
+    reply_versions: list[dict[str, str]] = Field(default_factory=list)
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
     claim_category: ClaimCategory = ClaimCategory.OTHER
@@ -136,7 +137,8 @@ class OpenAIFactCheckClient:
         registry: SourceRegistry,
         allow_web_search: bool,
         style_profile_service: StyleProfileService,
-        language_conflict: LanguageConflict | None = None,  # NEW
+        language_conflict: LanguageConflict | None = None,
+        language_assist: SeaLionLanguageAssist | None = None,
     ) -> FactCheckResult:
         system_prompt = self.system_prompt
         if language_conflict:
@@ -151,6 +153,7 @@ class OpenAIFactCheckClient:
                     if message.detected_languages
                     else ""
                 ),
+                _language_assist_prompt_block(language_assist),
                 registry.prompt_hint(),
                 style_profile_service.prompt_guidance(style_profile),
             ]
@@ -180,11 +183,11 @@ class OpenAIFactCheckClient:
             )
             response = await responses_api.create(
                 model=self.settings.openai_model,
-                reasoning={"effort": "low"},
-                text={
-                    "verbosity": "low",
-                    "format": _factcheck_output_format(),
-                },
+                reasoning=self.settings.openai_reasoning(task="factcheck"),
+                text=self.settings.openai_text_config(
+                    task="factcheck",
+                    format=_factcheck_output_format(),
+                ),
                 max_output_tokens=max_output_tokens,
                 store=False,
                 tools=tools,
@@ -263,6 +266,8 @@ class OpenAIFactCheckClient:
             actionability=parsed_payload.actionability,
             usage=_usage_from_response(response, self.settings, allow_web_search),
         )
+        if language_assist is not None:
+            result.usage.auxiliary_model = language_assist.model
         evidence_domains = [source.domain for source in result.evidence if source.domain]
         result.has_official_sg_source = registry.has_official_or_singapore_first_source(
             evidence_domains
@@ -311,8 +316,8 @@ class OpenAIFactCheckClient:
         )
         response = await responses_api.create(
             model=self.settings.openai_model,
-            reasoning={"effort": "low"},
-            text={"verbosity": "low"},
+            reasoning=self.settings.openai_reasoning(task="followup"),
+            text=self.settings.openai_text_config(task="followup"),
             max_output_tokens=_FOLLOWUP_MAX_OUTPUT_TOKENS,
             store=False,
             tools=[{"type": "web_search_preview"}],
@@ -351,11 +356,11 @@ class OpenAIFactCheckClient:
         responses_api: Any = self.client.responses
         response = await responses_api.create(
             model=self.settings.openai_model,
-            reasoning={"effort": "low"},
-            text={
-                "verbosity": "low",
-                "format": _translation_output_format(),
-            },
+            reasoning=self.settings.openai_reasoning(task="translation"),
+            text=self.settings.openai_text_config(
+                task="translation",
+                format=_translation_output_format(),
+            ),
             max_output_tokens=_TRANSLATION_MAX_OUTPUT_TOKENS,
             store=False,
             input=[
@@ -563,6 +568,7 @@ def _usage_from_response(
     reasoning_tokens = int(getattr(details, "reasoning_tokens", 0) or 0)
     web_search_calls = 1 if allow_web_search else 0
     return ModelUsage(
+        model=settings.openai_model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
@@ -620,6 +626,7 @@ class FactCheckService:
         hot_claim_store: HotClaimStore,
         style_profile_service: StyleProfileService,
         text_simhash_max_distance: int,
+        language_assist_provider: LanguageAssistProvider | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -627,13 +634,14 @@ class FactCheckService:
         self.hot_claim_store = hot_claim_store
         self.style_profile_service = style_profile_service
         self.text_simhash_max_distance = text_simhash_max_distance
+        self.language_assist_provider = language_assist_provider
 
     async def assess_candidate(
         self,
         *,
         message: NormalizedMessage,
         style_profile: GroupStyleProfile,
-        language_conflict: LanguageConflict | None = None,  # NEW
+        language_conflict: LanguageConflict | None = None,
     ) -> FactCheckResult:
         cached_result = await self._cached_result_for_message(message)
         if cached_result is not None:
@@ -660,13 +668,15 @@ class FactCheckService:
             message.group_id,
             message.message_id,
         )
+        language_assist = await self._language_assist_for_message(message)
         result = await self.client.fact_check(
             message=message,
             style_profile=style_profile,
             registry=self.registry,
             allow_web_search=True,
             style_profile_service=self.style_profile_service,
-            language_conflict=language_conflict,  # NEW
+            language_conflict=language_conflict,
+            language_assist=language_assist,
         )
         result.usage.transcription_cost_usd = transcription_cost
         if result.claim_key:
@@ -707,6 +717,36 @@ class FactCheckService:
             text=text,
             target_language=target_language,
         )
+
+    async def _language_assist_for_message(
+        self,
+        message: NormalizedMessage,
+    ) -> SeaLionLanguageAssist | None:
+        if self.language_assist_provider is None:
+            return None
+        try:
+            assist = await self.language_assist_provider.assist_message(message=message)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Sea-Lion language assist failed group_id=%s message_id=%s",
+                message.group_id,
+                message.message_id,
+                exc_info=True,
+            )
+            return None
+        if assist is None:
+            return None
+        logger.info(
+            (
+                "Sea-Lion language assist applied group_id=%s message_id=%s "
+                "model=%s source_language=%s"
+            ),
+            message.group_id,
+            message.message_id,
+            assist.model,
+            assist.source_language,
+        )
+        return assist
 
     async def _cached_result_for_message(
         self,
@@ -852,3 +892,20 @@ def _normalize_domain_value(domain: str) -> str:
     if normalized.startswith("www."):
         return normalized[4:]
     return normalized
+
+
+def _language_assist_prompt_block(language_assist: SeaLionLanguageAssist | None) -> str:
+    if language_assist is None:
+        return ""
+    parts = [
+        (
+            "Auxiliary Southeast Asian language assist below. "
+            "Use it only as a paraphrase aid, not as evidence."
+        ),
+        f"Assist model: {language_assist.model}",
+        f"Source language: {language_assist.source_language}",
+        f"English gloss: {language_assist.english_gloss}",
+    ]
+    if language_assist.regional_context:
+        parts.append(f"Regional context: {language_assist.regional_context}")
+    return "\n".join(parts)

@@ -45,7 +45,9 @@ ALTER TABLE bot_analytics.reply_events
 ALTER TABLE bot_analytics.usage_events
     ADD COLUMN IF NOT EXISTS group_display_name String AFTER group_id;
 ALTER TABLE bot_analytics.usage_events
-    ADD COLUMN IF NOT EXISTS claim_category LowCardinality(String) AFTER model;
+    ADD COLUMN IF NOT EXISTS auxiliary_model Nullable(String) AFTER model;
+ALTER TABLE bot_analytics.usage_events
+    ADD COLUMN IF NOT EXISTS claim_category LowCardinality(String) AFTER auxiliary_model;
 ALTER TABLE bot_analytics.usage_events
     ADD COLUMN IF NOT EXISTS risk_level LowCardinality(String) AFTER claim_category;
 ALTER TABLE bot_analytics.usage_events

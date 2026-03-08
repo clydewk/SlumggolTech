@@ -20,6 +20,7 @@ from slumggol_bot.schemas import (
 from slumggol_bot.services.cache import InMemoryHotClaimStore
 from slumggol_bot.services.factcheck import FactCheckService, OpenAIFactCheckClient, SourceRegistry
 from slumggol_bot.services.hashing import compute_text_simhash
+from slumggol_bot.services.sealion import SeaLionLanguageAssist
 from slumggol_bot.services.style_profiles import StyleProfileService
 
 
@@ -71,6 +72,16 @@ class FakeClient:
             usage=ModelUsage(),
             claim_key="claim-key-1",
         )
+
+
+class FakeLanguageAssistProvider:
+    def __init__(self, assist: SeaLionLanguageAssist | None) -> None:
+        self.assist = assist
+        self.calls = 0
+
+    async def assist_message(self, *, message: NormalizedMessage):  # noqa: ARG002
+        self.calls += 1
+        return self.assist
 
 
 class FakeRegistry:
@@ -420,6 +431,53 @@ async def test_audio_candidate_sets_text_simhash_only_after_transcription() -> N
 
 
 @pytest.mark.asyncio
+async def test_factcheck_service_passes_language_assist_to_client() -> None:
+    class CapturingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_language_assist: SeaLionLanguageAssist | None = None
+
+        async def fact_check(self, **kwargs):  # noqa: ANN003
+            self.seen_language_assist = kwargs["language_assist"]
+            return await super().fact_check(**kwargs)
+
+    assist = SeaLionLanguageAssist(
+        model="aisingapore/Gemma-SEA-LION-v4-27B-IT",
+        source_language="ms",
+        english_gloss="The message says MOH confirmed papaya leaves cure dengue.",
+        regional_context="The wording is colloquial Malay.",
+    )
+    provider = FakeLanguageAssistProvider(assist)
+    client = CapturingClient()
+    service = FactCheckService(
+        client=client,
+        registry=FakeRegistry(),
+        cache_repo=FakeCacheRepo(),
+        hot_claim_store=InMemoryHotClaimStore(),
+        style_profile_service=StyleProfileService(),
+        text_simhash_max_distance=3,
+        language_assist_provider=provider,
+    )
+
+    await service.assess_candidate(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="group-1",
+            message_id="message-1",
+            sender_id="sender-1",
+            content_kind=ContentKind.TEXT,
+            command_name="factcheck",
+            text="KKM dah sahkan daun betik boleh sembuhkan denggi",
+            text_sha256="hash-1",
+        ),
+        style_profile=GroupStyleProfile(),
+    )
+
+    assert provider.calls == 1
+    assert client.seen_language_assist == assist
+
+
+@pytest.mark.asyncio
 async def test_openai_factcheck_client_retries_truncated_response(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -486,6 +544,197 @@ async def test_openai_factcheck_client_retries_truncated_response(
         < fake_responses.calls[1]["max_output_tokens"]
     )
     assert "Retrying incomplete OpenAI factcheck response" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_openai_factcheck_client_uses_configured_reasoning_and_verbosity() -> None:
+    settings = AppSettings(
+        openai_api_key="test-key",
+        openai_reasoning_effort="medium",
+        openai_factcheck_reasoning_effort="high",
+        openai_verbosity="medium",
+        openai_factcheck_verbosity="low",
+    )
+    client = OpenAIFactCheckClient(settings)
+    fake_responses = FakeResponsesClient(
+        [
+            FakeResponse(
+                response_id="resp_complete",
+                status="completed",
+                output_text=(
+                    '{"needs_reply":true,"verdict":"false","confidence":0.99,'
+                    '"canonical_claim_en":"MOH confirmed that drinking salt water cures dengue.",'
+                    '"reply_language":"English",'
+                    '"reply_text":"This is false. There is no official guidance '
+                    'saying salt water cures dengue.",'
+                    '"reply_versions":[],'
+                    '"reason_codes":["public_health_claim","official_sources_contradict"],'
+                    '"claim_category":"public_health",'
+                    '"risk_level":"high",'
+                    '"actionability":"countermessage_ready",'
+                    '"evidence":['
+                    '{"title":"MOH","url":"https://www.moh.gov.sg/example","domain":"moh.gov.sg","published_at":"2024-01-01"},'
+                    '{"title":"gov.sg","url":"https://www.gov.sg/example","domain":"gov.sg","published_at":"2024-01-02"}'
+                    ']}'
+                ),
+            ),
+        ]
+    )
+    client.client = SimpleNamespace(responses=fake_responses)
+
+    await client.fact_check(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="-5264231879",
+            message_id="-5264231879:44",
+            sender_id="123",
+            content_kind=ContentKind.TEXT,
+            text="MOH confirmed that drinking salt water cures dengue",
+        ),
+        style_profile=GroupStyleProfile(),
+        registry=FakeRegistry(),
+        allow_web_search=True,
+        style_profile_service=StyleProfileService(),
+    )
+
+    assert fake_responses.calls[0]["reasoning"] == {"effort": "high"}
+    assert fake_responses.calls[0]["text"]["verbosity"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_openai_followup_uses_task_specific_reasoning_and_verbosity() -> None:
+    settings = AppSettings(
+        openai_api_key="test-key",
+        openai_reasoning_effort="medium",
+        openai_followup_reasoning_effort="minimal",
+        openai_verbosity="medium",
+        openai_followup_verbosity="high",
+    )
+    client = OpenAIFactCheckClient(settings)
+    fake_responses = FakeResponsesClient(
+        [
+            FakeResponse(
+                response_id="resp_followup",
+                status="completed",
+                output_text="Here are the additional reasons and evidence.",
+            ),
+        ]
+    )
+    client.client = SimpleNamespace(responses=fake_responses)
+
+    answer = await client.answer_followup(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="-5264231879",
+            message_id="-5264231879:45",
+            sender_id="123",
+            content_kind=ContentKind.TEXT,
+            text="What about these other reasons?",
+            quoted_text="Verdict: false (95% confidence)",
+        ),
+        style_profile=GroupStyleProfile(),
+        registry=FakeRegistry(),
+        style_profile_service=StyleProfileService(),
+    )
+
+    assert answer == "Here are the additional reasons and evidence."
+    assert fake_responses.calls[0]["reasoning"] == {"effort": "minimal"}
+    assert fake_responses.calls[0]["text"] == {"verbosity": "high"}
+
+
+@pytest.mark.asyncio
+async def test_openai_translation_uses_task_specific_reasoning_and_verbosity() -> None:
+    settings = AppSettings(
+        openai_api_key="test-key",
+        openai_reasoning_effort="medium",
+        openai_translation_reasoning_effort="minimal",
+        openai_verbosity="medium",
+        openai_translation_verbosity="low",
+    )
+    client = OpenAIFactCheckClient(settings)
+    fake_responses = FakeResponsesClient(
+        [
+            FakeResponse(
+                response_id="resp_translation",
+                status="completed",
+                output_text=(
+                    '{"source_language":"en","target_language":"zh",'
+                    '"needs_translation":true,"translated_text":"这是翻译后的版本。"}'
+                ),
+            ),
+        ]
+    )
+    client.client = SimpleNamespace(responses=fake_responses)
+
+    translation = await client.translate_text(
+        text="This claim is false.",
+        target_language="zh",
+    )
+
+    assert translation.translated_text == "这是翻译后的版本。"
+    assert fake_responses.calls[0]["reasoning"] == {"effort": "minimal"}
+    assert fake_responses.calls[0]["text"]["verbosity"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_openai_factcheck_client_includes_language_assist_in_prompt() -> None:
+    settings = AppSettings(openai_api_key="test-key")
+    client = OpenAIFactCheckClient(settings)
+    fake_responses = FakeResponsesClient(
+        [
+            FakeResponse(
+                response_id="resp_complete",
+                status="completed",
+                output_text=(
+                    '{"needs_reply":true,"verdict":"false","confidence":0.99,'
+                    '"canonical_claim_en":"MOH confirmed that drinking salt water cures dengue.",'
+                    '"reply_language":"English",'
+                    '"reply_text":"This is false. There is no official guidance '
+                    'saying salt water cures dengue.",'
+                    '"reply_versions":[],'
+                    '"reason_codes":["public_health_claim","official_sources_contradict"],'
+                    '"claim_category":"public_health",'
+                    '"risk_level":"high",'
+                    '"actionability":"countermessage_ready",'
+                    '"evidence":['
+                    '{"title":"MOH","url":"https://www.moh.gov.sg/example","domain":"moh.gov.sg","published_at":"2024-01-01"},'
+                    '{"title":"gov.sg","url":"https://www.gov.sg/example","domain":"gov.sg","published_at":"2024-01-02"}'
+                    ']}'
+                ),
+            ),
+        ]
+    )
+    client.client = SimpleNamespace(responses=fake_responses)
+
+    result = await client.fact_check(
+        message=NormalizedMessage(
+            occurred_at=datetime.now(UTC),
+            group_id="-5264231879",
+            message_id="-5264231879:43",
+            sender_id="123",
+            content_kind=ContentKind.TEXT,
+            text="KKM dah sahkan air garam boleh sembuhkan denggi",
+        ),
+        style_profile=GroupStyleProfile(),
+        registry=FakeRegistry(),
+        allow_web_search=True,
+        style_profile_service=StyleProfileService(),
+        language_assist=SeaLionLanguageAssist(
+            model="aisingapore/Gemma-SEA-LION-v4-27B-IT",
+            source_language="ms",
+            english_gloss=(
+                "The message claims the health ministry confirmed "
+                "salt water cures dengue."
+            ),
+            regional_context="KKM is a Malay shorthand for the Ministry of Health.",
+        ),
+    )
+
+    user_text = fake_responses.calls[0]["input"][1]["content"][0]["text"]
+    assert "Auxiliary Southeast Asian language assist below." in user_text
+    assert "Assist model: aisingapore/Gemma-SEA-LION-v4-27B-IT" in user_text
+    assert "KKM is a Malay shorthand for the Ministry of Health." in user_text
+    assert result.usage.auxiliary_model == "aisingapore/Gemma-SEA-LION-v4-27B-IT"
 
 
 def test_source_registry_classifies_preferred_and_official_domains(tmp_path) -> None:

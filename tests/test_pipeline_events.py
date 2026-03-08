@@ -67,7 +67,12 @@ def test_factcheck_related_events_use_message_timestamp_and_structured_fields() 
         claim_category=ClaimCategory.PUBLIC_HEALTH,
         has_official_sg_source=True,
         official_source_domain_count=2,
-        usage=ModelUsage(input_tokens=1, output_tokens=1),
+        usage=ModelUsage(
+            model="gpt-5.4",
+            auxiliary_model="aisingapore/Gemma-SEA-LION-v4-27B-IT",
+            input_tokens=1,
+            output_tokens=1,
+        ),
         claim_key="claim-key-1",
     )
 
@@ -84,3 +89,5 @@ def test_factcheck_related_events_use_message_timestamp_and_structured_fields() 
     assert claim.payload["claim_category"] == "public_health"
     assert factcheck.payload["has_official_sg_source"] == 1
     assert reply.payload["official_source_domain_count"] == 2
+    assert usage.payload["model"] == "gpt-5.4"
+    assert usage.payload["auxiliary_model"] == "aisingapore/Gemma-SEA-LION-v4-27B-IT"

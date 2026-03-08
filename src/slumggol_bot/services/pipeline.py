@@ -103,27 +103,30 @@ class PipelineOrchestrator:
         )
         if self.rate_limiter is not None:
             if not await self.rate_limiter.user_allowed(message.sender_id, message.group_id):
-                await self._send_bot_reply(
-                    group_id=message.group_id,
-                    reply_text=(
-                        "Eh, slow down lah 🙏 You sending too many messages. "
-                        "Try again in a bit."
-                    ),
-                    reply_to_message_id=message.transport_message_id,
-                    language_code="en",
-                )
+                if await self.rate_limiter.user_notice_allowed(
+                    message.sender_id,
+                    message.group_id,
+                ):
+                    await self._try_send_rate_limit_reply(
+                        group_id=message.group_id,
+                        reply_text=(
+                            "Eh, slow down lah 🙏 You sending too many messages. "
+                            "Try again in a bit."
+                        ),
+                        reply_to_message_id=message.transport_message_id,
+                    )
                 return None
 
             if not await self.rate_limiter.group_allowed(message.group_id):
-                await self._send_bot_reply(
-                    group_id=message.group_id,
-                    reply_text=(
-                        "This group is sending a lot of claims right now. "
-                        "Give it 2 minutes and try again 🙏"
-                    ),
-                    reply_to_message_id=message.transport_message_id,
-                    language_code="en",
-                )
+                if await self.rate_limiter.group_notice_allowed(message.group_id):
+                    await self._try_send_rate_limit_reply(
+                        group_id=message.group_id,
+                        reply_text=(
+                            "This group is sending a lot of claims right now. "
+                            "Give it 2 minutes and try again 🙏"
+                        ),
+                        reply_to_message_id=message.transport_message_id,
+                    )
                 return None
         profile = GroupStyleProfile.model_validate(group.style_profile or {})
         updated_profile = self.style_profile_service.update_profile(profile, message)
@@ -346,6 +349,28 @@ class PipelineOrchestrator:
                 language_code=language_code,
             )
         return sent_message_id
+
+    async def _try_send_rate_limit_reply(
+        self,
+        *,
+        group_id: str,
+        reply_text: str,
+        reply_to_message_id: int | None,
+    ) -> None:
+        try:
+            await self._send_bot_reply(
+                group_id=group_id,
+                reply_text=reply_text,
+                reply_to_message_id=reply_to_message_id,
+                language_code="en",
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to send rate limit warning group_id=%s reply_to_message_id=%s",
+                group_id,
+                reply_to_message_id,
+                exc_info=True,
+            )
 
     async def _handle_translation_interaction(self, message: NormalizedMessage) -> None:
         callback_query_id = message.callback_query_id
@@ -757,7 +782,8 @@ def usage_event(message: NormalizedMessage, result: FactCheckResult) -> Analytic
             "group_display_name": message.group_display_name or "",
             "message_id": message.message_id,
             "claim_key": result.claim_key,
-            "model": "gpt-5.4",
+            "model": usage.model,
+            "auxiliary_model": usage.auxiliary_model,
             "claim_category": result.claim_category.value,
             "risk_level": result.risk_level.value,
             "actionability": result.actionability.value,

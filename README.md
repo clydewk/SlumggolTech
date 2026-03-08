@@ -4,6 +4,7 @@ Telegram fact-check bot scaffold built around:
 
 - `Telegram Bot API` for transport
 - `GPT-5.4` for single-pass candidate fact-checking
+- optional `Sea-Lion` language assist for Southeast Asian phrasing
 - `gpt-4o-transcribe` for voice notes
 - Postgres for authoritative bot state
 - Redis for queues and hot claim caches
@@ -40,6 +41,45 @@ docker compose --profile polling up --build
 ```
 
 8. Create a Telegram bot with BotFather, disable bot privacy for groups with `/setprivacy`, and add the bot to the target group or supergroup.
+
+## Optional Sea-Lion Language Assist
+
+Sea-Lion support is optional. When enabled, the bot can use it as a paraphrase aid for Southeast Asian phrasing before GPT-5.4 performs the final fact-check.
+
+```dotenv
+SEALION_ENABLED=true
+SEALION_API_KEY=replace-with-sea-lion-key
+SEALION_BASE_URL=https://api.sea-lion.ai/v1
+SEALION_MODEL=aisingapore/Gemma-SEA-LION-v4-27B-IT
+SEALION_ASSIST_ON_FACTCHECK_COMMAND=true
+SEALION_ASSIST_ON_FORWARDED_MESSAGES=true
+```
+
+GPT-5.4 still produces the verdict, evidence, and final reply. Sea-Lion output is used only as an interpretation aid and is never treated as evidence.
+
+## OpenAI Request Tuning
+
+The GPT-5.4 path now supports env-configurable Responses API tuning instead of hardcoded request settings.
+
+Global defaults:
+
+```dotenv
+OPENAI_REASONING_EFFORT=medium
+OPENAI_VERBOSITY=medium
+```
+
+Optional per-task overrides:
+
+```dotenv
+OPENAI_FACTCHECK_REASONING_EFFORT=medium
+OPENAI_FOLLOWUP_REASONING_EFFORT=minimal
+OPENAI_TRANSLATION_REASONING_EFFORT=minimal
+OPENAI_FACTCHECK_VERBOSITY=low
+OPENAI_FOLLOWUP_VERBOSITY=medium
+OPENAI_TRANSLATION_VERBOSITY=low
+```
+
+If a per-task override is unset, that request type falls back to the global default.
 
 ## ClickHouse Cloud Setup
 

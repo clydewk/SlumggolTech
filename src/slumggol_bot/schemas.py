@@ -145,6 +145,8 @@ class EvidenceSource(BaseModel):
 
 
 class ModelUsage(BaseModel):
+    model: str = "gpt-5.4"
+    auxiliary_model: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0

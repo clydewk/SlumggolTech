@@ -2,96 +2,157 @@
 
 ## Purpose
 
-This repository contains a Telegram fact-check bot for multilingual Singapore group chats. The bot should remain mostly dormant, detect likely misinformation candidates, run a single GPT-5.4 fact-check call for those candidates, and post a short corrective reply only when confidence and corroboration thresholds are met.
+This repository contains a Telegram fact-check bot for Singapore group chats. The implemented bot stays mostly dormant, uses heuristic gating plus hot-claim reuse to pick candidates, runs GPT-5.4 fact-checks on those candidates, and posts a corrective reply only when stricter reply thresholds pass. It also supports manual `/factcheck` checks, in-thread follow-up questions, and per-message translation buttons.
 
 ## Architecture Rules
 
-- Postgres is the source of truth for bot state, group configuration, cached fact-check results, and admin controls.
-- Redis is used for background jobs and hot-claim prewarming.
-- ClickHouse Cloud is analytics-only. It is never the source of truth for synchronous bot behavior.
-- `Telegram Bot API` is the transport adapter for this codebase.
-- `GPT-5.4` is the only fact-check model in the normal path.
-- `gpt-4o-transcribe` is the only voice-note transcription model in the normal path.
-- Raw inbound content must never be persisted. Only hashes, derived claims, style aggregates, analytics events, bot replies, and usage metrics may be stored.
-- No standalone OCR microservice belongs in v1. Images go straight into the GPT-5.4 request.
+- Postgres is the source of truth for group state, style profiles, cached fact-check results, hot-claim snapshots, and the escalation queue.
+- Redis is used for ARQ worker coordination and transient state only: rate limits, hash/simhash observations, hot-claim prewarming, and translation state.
+- ClickHouse Cloud is analytics-only. It powers rollups, dashboard queries, and outbreak discovery, but it is never the source of truth for synchronous bot behavior.
+- `Telegram Bot API` is the only transport adapter in this repo. FastAPI handles webhook ingress, and `slumggol-poller` handles polling ingress.
+- `GPT-5.4` is the only model on the normal path for fact-checks, follow-up answers, and translations.
+- `gpt-4o-transcribe` is the only voice-note transcription model on the normal path.
+- Raw inbound text, image bytes, audio bytes, and transcripts must not be persisted. Persist only hashes, derived claims, style aggregates, bot outputs, escalation records, and analytics-safe metadata.
+- Images go directly into the GPT request. There is no separate OCR service in this codebase.
+- Group tone adaptation lives in `services/style_profiles.py`; keep reply-style logic there rather than inside routes or transport code.
 
-## Operational Rules
+## Current Behavior
 
-- Default `analysis_mode` is `gated`.
-- Default local-development Telegram ingress is `polling`. Webhook plus Cloudflare tunnel is optional.
-- `analysis_mode=all_messages_llm` is demo-only, and must auto-expire after the configured TTL or spend cap.
-- All `/admin/*` routes require `Authorization: Bearer <ADMIN_API_TOKEN>`.
-- Auto-replies require:
+- Default group `analysis_mode` is `gated`.
+- `analysis_mode=all_messages_llm` exists and is wired through the gate, but the configured demo TTL and spend-cap settings are not currently auto-enforced anywhere in the code.
+- Default local Telegram ingress is `polling`. The poller deletes any existing webhook before calling `getUpdates`.
+- Webhook mode is supported through `POST /webhooks/telegram` and optionally validates `X-Telegram-Bot-Api-Secret-Token` against `TELEGRAM_WEBHOOK_SECRET`.
+- Manual fact-checking works through `/factcheck <claim>` or by replying to a message and mentioning `@<bot_username>`.
+- Users can ask follow-up questions by replying to a bot fact-check message; the bot answers in-thread.
+- Bot replies include translation buttons. Users can translate a bot message once per target language (`en`, `zh`, `ms`, `ta`), and translation dedupes across the full translation thread root.
+- Automatic replies currently require:
+  - `needs_reply=True`
   - verdict in `false`, `misleading`, or `unsupported`
   - confidence `>= 0.82`
-  - at least 2 corroborating sources
-  - one official or Singapore-first source for public-safety and public-health claims
-- Analytics failures must fail open and never block ingestion or replies.
-- ClickHouse outages must degrade to “no analytics writes” and “no outbreak refresh,” not “no bot.”
-- Outbreak refresh is scheduled through ARQ cron using `OUTBREAK_REFRESH_INTERVAL_MINUTES`.
-- Metabase is the default internal dashboard surface for the ClickHouse analytics layer; do not build a separate custom dashboard in this repo unless explicitly asked.
+  - at least 2 evidence sources
+  - at least one Singapore-first or official source for `public_health` and `public_safety`
+- Unclear or unsupported results with confidence `>= 0.5` are queued in the Postgres escalation table instead of auto-replied.
+- Auto-replies append source attribution if the model reply omitted it. Stale evidence can append a freshness caveat.
+- Redis rate limiting is active in the pipeline:
+  - per user per group: 5 messages per 60 seconds
+  - per group: 10 messages per 120 seconds
+- Analytics writes must fail open and never block ingestion or replies.
+- ClickHouse outages must degrade to "no analytics writes" and "no outbreak refresh," not "no bot."
+- Outbreak refresh runs through ARQ cron using `OUTBREAK_REFRESH_INTERVAL_MINUTES`, clamped in code to the range `1..60`.
+- The optional internal dashboard surface in this repo is Metabase via the Compose `dashboard` profile. There is no custom dashboard frontend here.
 
 ## Repo Map
 
-- `src/slumggol_bot/api/`: FastAPI application and HTTP routes
-- `src/slumggol_bot/transport/`: Telegram transport abstractions and adapter
-- `src/slumggol_bot/services/`: bot logic, hashing, analytics, fact-checking, style profile updates, and outbreak logic
-- `src/slumggol_bot/db/`: SQLAlchemy models, sessions, and repositories
-- `src/slumggol_bot/workers/`: ARQ worker entrypoints
-- `src/slumggol_bot/prompts/`: model prompt templates
+- `src/slumggol_bot/api/app.py`: FastAPI app, dependency wiring, webhook ingress, admin endpoints, and pipeline assembly
+- `src/slumggol_bot/polling.py`: polling runner that disables webhooks and feeds updates into the pipeline
+- `src/slumggol_bot/transport/telegram.py`: Telegram update normalization, command detection, callback handling, and message send/edit calls
+- `src/slumggol_bot/services/pipeline.py`: main orchestration, gating, reply logic, follow-ups, translations, analytics events, and escalation triggers
+- `src/slumggol_bot/services/factcheck.py`: OpenAI client, source registry, caching, hot-claim reuse, transcription, follow-up, and translation calls
+- `src/slumggol_bot/services/cache.py`: Redis/in-memory hot-claim stores and hash/simhash observation stores
+- `src/slumggol_bot/services/analytics.py`: ClickHouse sink, fail-open wrapper, and dashboard/query service
+- `src/slumggol_bot/services/outbreak.py`: hot-claim refresh service backed by ClickHouse analytics
+- `src/slumggol_bot/services/escalation.py`: escalation policy and repository wrapper
+- `src/slumggol_bot/services/freshness.py`: evidence recency scoring and stale-source caveats
+- `src/slumggol_bot/services/rate_limit.py`: Redis-backed user/group throttling
+- `src/slumggol_bot/services/style_profiles.py`: group tone profiling used to steer model replies
+- `src/slumggol_bot/services/language.py`: language-conflict prompt helper for multilingual reply versions
+- `src/slumggol_bot/services/hashing.py`: text/media hashing and simhash utilities
+- `src/slumggol_bot/db/`: SQLAlchemy models, repositories, and session setup
+- `src/slumggol_bot/workers/settings.py`: ARQ worker entrypoint and outbreak cron configuration
+- `src/slumggol_bot/prompts/factcheck_system.txt`: fact-check prompt contract
 - `src/slumggol_bot/sources/registry.yml`: curated Singapore-first source registry
-- `scripts/manage_clickhouse.py`: ClickHouse ping/bootstrap/migrate/smoke utility
-- `sql/clickhouse_bot_analytics.sql`: ClickHouse DDL and materialized views
-- `sql/clickhouse_bot_analytics_migrate_v2.sql`: ClickHouse upgrade path for existing services
-- `docker-compose.yml`: optional Metabase dashboard profile plus local infra
-- `tests/`: unit and integration tests
+- `alembic/versions/`: Postgres migrations for initial schema, simhash columns, claim-intelligence cache columns, and escalation queue
+- `sql/clickhouse_bot_analytics.sql`: canonical ClickHouse bootstrap DDL, rollups, and dashboard views
+- `sql/clickhouse_bot_analytics_migrate_v2.sql`: upgrade path for existing ClickHouse services
+- `scripts/manage_clickhouse.py`: ClickHouse ping/bootstrap/migrate/smoke tool
+- `scripts/set_telegram_webhook.sh`: registers `${PUBLIC_WEBHOOK_URL}/webhooks/telegram`
+- `scripts/sync_telegram_webhook.py`: watches the Cloudflare quick-tunnel log and re-registers the webhook after tunnel changes
+- `scripts/get_cloudflare_tunnel_url.sh`: prints the current quick-tunnel URL from Docker logs
+- `scripts/debug_telegram.sh`: quick `getMe` and `getWebhookInfo` helper
+- `docker-compose.yml`: local Postgres/Redis plus API, worker, poller, tunnel, webhook-sync, and optional Metabase profile
+- `tests/`: unit and integration-style coverage for transport, pipeline, admin API, analytics, polling, outage behavior, and ClickHouse-adjacent flows
+- `article-classifier/`: separate LibreChat MCP proof of concept, not part of the Telegram bot runtime
 
 ## Commands
 
 - `uv sync`: install dependencies
-- `docker compose up -d`: start Postgres and Redis locally
+- `docker compose up -d postgres redis`: start local Postgres and Redis
 - `uv run alembic upgrade head`: run Postgres migrations
-- `uv run slumggol-api`: start the API
+- `uv run slumggol-api`: start the FastAPI app
 - `uv run slumggol-poller`: start Telegram polling for local development
-- `uv run slumggol-worker`: start the worker
-- `uv run python scripts/manage_clickhouse.py ping`: validate ClickHouse auth and database presence
+- `uv run slumggol-worker`: start the ARQ worker
+- `docker compose --profile polling up --build`: run the local bot stack in polling mode
+- `docker compose --profile polling --profile dashboard up --build`: run the bot stack plus Metabase
+- `docker compose --profile tunnel up --build -d --remove-orphans`: run webhook mode with the optional Cloudflare quick tunnel
+- `uv run python scripts/manage_clickhouse.py ping`: validate ClickHouse connectivity
 - `uv run python scripts/manage_clickhouse.py bootstrap`: apply the full ClickHouse schema to a fresh service
-- `uv run python scripts/manage_clickhouse.py migrate_v2`: upgrade an existing ClickHouse service to the current schema
+- `uv run python scripts/manage_clickhouse.py migrate_v2`: upgrade an existing ClickHouse service
 - `uv run python scripts/manage_clickhouse.py smoke`: verify required ClickHouse objects exist
-- `docker compose --profile polling --profile dashboard up --build`: start the bot stack with the optional Metabase dashboard
+- `./scripts/set_telegram_webhook.sh`: register the Telegram webhook against `PUBLIC_WEBHOOK_URL`
+- `./scripts/debug_telegram.sh`: inspect bot auth and webhook state
 - `uv run pytest`: run tests
-- `uv run mypy src`: run static typing checks
+- `uv run mypy src`: run type checks
 - `uv run ruff check .`: run lint checks
 
 ## Coding Standards
 
 - Use typed Python throughout. Avoid untyped public functions.
-- Keep business logic in `services/`, not inside route handlers.
-- Keep transport-specific logic inside `transport/`.
-- Add concise comments only where the code is non-obvious.
-- Do not persist raw inbound text or media to Postgres, Redis, or ClickHouse.
+- Keep route handlers thin. Business logic belongs in `services/`.
+- Keep Telegram-specific parsing and API calls inside `transport/`.
+- Do not persist raw inbound content to Postgres, Redis, or ClickHouse.
 - Schema changes must go through Alembic.
-- Prompt changes must update tests or fixtures that validate the prompt contract.
+- ClickHouse schema or view changes must update both `sql/clickhouse_bot_analytics.sql` and `sql/clickhouse_bot_analytics_migrate_v2.sql`.
+- Prompt changes must update any tests or fixtures that validate the prompt contract or parsed response shape.
+- If you change reply thresholds, update both configuration and `services/pipeline.should_reply`; the current runtime logic uses hardcoded thresholds rather than `AppSettings.reply_confidence_threshold` and `AppSettings.min_sources_required`.
+- If you implement demo-mode expiry or spend caps, wire them into the actual request path; the env settings exist today but are not enforced.
+- If you touch admin endpoints, keep bearer-token checks consistent across the entire `/admin/*` surface.
 
 ## ClickHouse Rules
 
-- ClickHouse tables only contain hashes, derived metadata, bot outputs, and usage events.
-- Store dashboard-safe intelligence fields in ClickHouse, including `group_display_name`, `claim_category`, `risk_level`, `actionability`, `has_official_sg_source`, and `official_source_domain_count`.
-- Raw analytics tables retain 30 days of data.
-- Hourly rollups retain 180 days of data.
-- Daily rollups retain 2 years of data.
-- Materialized view changes must be accompanied by a matching update in `sql/clickhouse_bot_analytics.sql`.
-- Existing ClickHouse services must be upgraded with `sql/clickhouse_bot_analytics_migrate_v2.sql` or `scripts/manage_clickhouse.py migrate_v2` when rollups or views change.
-- The ClickHouse dashboard surface is read-only and should come from curated views and query endpoints, not ad hoc writes or synchronous Postgres dependencies.
-- Local development may run without ClickHouse; any code that writes analytics must tolerate the sink being disabled.
+- ClickHouse tables must contain only hashes, derived metadata, bot outputs, and usage events.
+- Dashboard-safe intelligence fields currently include `group_display_name`, `claim_category`, `risk_level`, `actionability`, `has_official_sg_source`, and `official_source_domain_count`.
+- Raw event tables retain 30 days of data:
+  - `message_events`
+  - `claim_events`
+  - `factcheck_events`
+  - `reply_events`
+  - `usage_events`
+- Short-horizon rollups retain 180 days of data:
+  - `hash_reuse_1h`
+  - `claim_spread_5m`
+  - `claim_intel_5m`
+- Daily rollups retain 2 years of data:
+  - `model_spend_daily`
+  - `source_quality_daily`
+  - `factcheck_intel_daily`
+  - `reply_outcomes_daily`
+- Dashboard views currently include:
+  - `dashboard_summary_24h`
+  - `dashboard_trending_claims_24h`
+  - `dashboard_claim_group_spread_24h`
+  - `dashboard_high_risk_scams_24h`
+- The dashboard surface is read-only and should stay backed by curated views/query endpoints rather than ad hoc writes or synchronous Postgres joins.
+- Local development may run with `ENABLE_CLICKHOUSE=false`; analytics code must tolerate the sink being disabled.
 
 ## Testing Rules
 
 - Mock OpenAI calls in unit tests.
 - Mock Telegram Bot API calls in unit tests.
 - Verify admin routes reject missing or invalid bearer tokens.
-- Verify that analytics failures do not change the reply path.
-- Verify that hot-claim refresh does not create duplicate live replies.
-- Verify that analytics events use source message time for trendable ClickHouse data.
-- Verify that structured claim intelligence fields flow through fact-checking, caching, analytics, and dashboard queries.
-- Verify that no raw inbound content is persisted by repository or analytics paths.
+- Verify analytics failures do not change the reply path.
+- Verify polling deletes webhooks before local polling starts.
+- Verify hot-claim exact-hash and simhash reuse avoid unnecessary model calls.
+- Verify audio candidates only gain transcript-derived hashes after transcription.
+- Verify follow-up replies, translation callbacks, and translation dedupe behavior.
+- Verify stale-source caveats and source attribution behavior on replies.
+- Verify analytics events use source message timestamps and never include raw inbound text.
+- Verify claim-intelligence fields flow through fact-checking, caching, analytics, and dashboard queries.
+- Verify no raw inbound content is persisted by repository or analytics paths.
+- If you add or modify escalation endpoints, add auth coverage for them; current tests only cover the dashboard and group metrics admin paths.
+
+## Known Drift
+
+- `DEMO_MODE_MAX_SPEND_USD` and `DEMO_MODE_TTL_MINUTES` are present in settings but are not currently enforced by the running pipeline.
+- `REPLY_CONFIDENCE_THRESHOLD` and `MIN_SOURCES_REQUIRED` are present in settings but are not currently consumed by `should_reply`.
+- The escalation admin endpoints exist, but bearer-token protection is not currently applied to them even though they should be treated as admin-only.
+- `NormalizedMessage` has fields for `detected_languages`, `forwarded_many_times`, `media_sha256`, and `image_phash`, but the Telegram transport currently does not populate those fields.
