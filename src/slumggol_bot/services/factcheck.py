@@ -183,7 +183,10 @@ class OpenAIFactCheckClient:
             )
             response = await responses_api.create(
                 model=self.settings.openai_model,
-                reasoning=self.settings.openai_reasoning(task="factcheck"),
+                reasoning=self.settings.openai_reasoning(
+                    task="factcheck",
+                    allow_web_search=allow_web_search,
+                ),
                 text=self.settings.openai_text_config(
                     task="factcheck",
                     format=_factcheck_output_format(),
@@ -316,7 +319,7 @@ class OpenAIFactCheckClient:
         )
         response = await responses_api.create(
             model=self.settings.openai_model,
-            reasoning=self.settings.openai_reasoning(task="followup"),
+            reasoning=self.settings.openai_reasoning(task="followup", allow_web_search=True),
             text=self.settings.openai_text_config(task="followup"),
             max_output_tokens=_FOLLOWUP_MAX_OUTPUT_TOKENS,
             store=False,

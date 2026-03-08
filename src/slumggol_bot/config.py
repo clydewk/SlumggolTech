@@ -101,8 +101,17 @@ class AppSettings(BaseSettings):
         minutes = max(seconds / 60.0, 0.0)
         return minutes * self.transcription_cost_per_minute
 
-    def openai_reasoning(self, *, task: OpenAITask) -> dict[str, OpenAIReasoningEffort]:
-        return {"effort": self._reasoning_effort_for(task)}
+    def openai_reasoning(
+        self,
+        *,
+        task: OpenAITask,
+        allow_web_search: bool = False,
+    ) -> dict[str, OpenAIReasoningEffort]:
+        effort = self._reasoning_effort_for(task)
+        if allow_web_search and effort == "minimal":
+            # The Responses API rejects web search when reasoning effort is minimal.
+            effort = "low"
+        return {"effort": effort}
 
     def openai_text_config(
         self,
