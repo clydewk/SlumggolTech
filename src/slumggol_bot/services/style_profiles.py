@@ -4,6 +4,9 @@ from collections import Counter
 
 from slumggol_bot.schemas import GroupStyleProfile, NormalizedMessage
 
+_TONE_BUFFER_SIZE = 100
+_TONE_INFERENCE_INTERVAL = 100
+
 
 def _emoji_count(text: str) -> int:
     return sum(1 for character in text if ord(character) > 10000)
@@ -21,35 +24,10 @@ _SENIOR_SIGNALS = [
     "as per", "herewith", "please note",
 ]
 
-
-def _infer_lingo_style(text: str, current_style: str, message_count: int) -> str:
-    """
-    Infer lingo style from message text.
-    Tilts the current style based on signals found — does not hard-switch.
-    Returns one of: genz_professional, professional, senior, mixed.
-    """
-    lower = text.lower()
-    genz_score = sum(1 for signal in _GENZ_SIGNALS if signal in lower)
-    senior_score = sum(1 for signal in _SENIOR_SIGNALS if signal in lower)
-
-    # Not enough data yet — keep mixed
-    if message_count < 10:
-        return current_style
-
-    if genz_score > senior_score and genz_score >= 2:
-        return "genz_professional"
-    if senior_score > genz_score and senior_score >= 2:
-        return "senior"
-    if genz_score == 0 and senior_score == 0:
-        # Neutral — lean professional
-        return "professional" if current_style == "mixed" else current_style
-    return current_style
-
-
-_LINGO_TONE_GUIDANCE: dict[str, str] = {
+TONE_PRESETS: dict[str, str] = {
     "genz_professional": (
         "Tone: Gen Z professional. Be direct, sharp, and confident. "
-        "Light casual phrasing is fine (e.g. 'ok so', 'actually', 'ngl') but keep it credible. "
+        "Light casual phrasing is fine but keep it credible. "
         "Avoid boomer-style filler. Short punchy sentences. 1-2 emoji max."
     ),
     "professional": (
@@ -64,10 +42,57 @@ _LINGO_TONE_GUIDANCE: dict[str, str] = {
     ),
     "mixed": (
         "Tone: Neutral Singlish. Friendly and direct. "
-        "Light use of discourse particles like 'lah', 'leh', 'hor' is fine. "
+        "Light use of discourse particles like lah, leh, hor is fine. "
         "Keep it conversational but credible."
     ),
 }
+
+
+def tone_prompt_block(profile: GroupStyleProfile) -> str:
+    override = profile.lingo_style_override
+    if override:
+        if override in TONE_PRESETS:
+            return TONE_PRESETS[override]
+        return f"Tone instruction (custom): {override}"
+    if profile.generated_tone:
+        return f"Tone instruction (inferred from group history): {profile.generated_tone}"
+    return TONE_PRESETS.get(profile.lingo_style, TONE_PRESETS["mixed"])
+
+
+def should_regenerate_tone(profile: GroupStyleProfile) -> bool:
+    if profile.lingo_style_override:
+        return False
+    if len(profile.tone_sample_buffer) < _TONE_BUFFER_SIZE:
+        return False
+    return profile.message_count % _TONE_INFERENCE_INTERVAL == 0
+
+
+def tone_inference_prompt(profile: GroupStyleProfile) -> str:
+    sample = "\n".join(f"- {msg}" for msg in profile.tone_sample_buffer[-50:])
+    return (
+        "You are analysing the communication style of a Telegram group chat in Singapore.\n"
+        "Based on these recent messages, describe the group tone in 2-3 sentences.\n"
+        "Focus on: formality level, use of Singlish, emoji usage, sentence length, "
+        "and any distinctive speech patterns.\n"
+        "This description will be used to instruct a fact-checking bot to match the group style.\n"
+        "Be specific and practical. Do not use bullet points. Plain text only.\n\n"
+        f"Recent messages:\n{sample}"
+    )
+
+
+def _infer_lingo_style_heuristic(text: str, current_style: str, message_count: int) -> str:
+    lower = text.lower()
+    genz_score = sum(1 for signal in _GENZ_SIGNALS if signal in lower)
+    senior_score = sum(1 for signal in _SENIOR_SIGNALS if signal in lower)
+    if message_count < 10:
+        return current_style
+    if genz_score > senior_score and genz_score >= 2:
+        return "genz_professional"
+    if senior_score > genz_score and senior_score >= 2:
+        return "senior"
+    if genz_score == 0 and senior_score == 0:
+        return "professional" if current_style == "mixed" else current_style
+    return current_style
 
 
 class StyleProfileService:
@@ -100,11 +125,17 @@ class StyleProfileService:
             if token in text.lower() and token not in discourse_particles:
                 discourse_particles.append(token)
 
-        # Infer lingo style unless admin has set an override
-        if profile.lingo_style_override:
+        buffer = profile.tone_sample_buffer[:]
+        if text.strip():
+            buffer.append(text.strip())
+        buffer = buffer[-_TONE_BUFFER_SIZE:]
+
+        if profile.lingo_style_override and profile.lingo_style_override in TONE_PRESETS:
             lingo_style = profile.lingo_style_override
+        elif not profile.lingo_style_override:
+            lingo_style = _infer_lingo_style_heuristic(text, profile.lingo_style, next_count)
         else:
-            lingo_style = _infer_lingo_style(text, profile.lingo_style, next_count)
+            lingo_style = profile.lingo_style
 
         return GroupStyleProfile(
             dominant_languages=dominant_languages,
@@ -115,6 +146,8 @@ class StyleProfileService:
             message_count=next_count,
             lingo_style=lingo_style,
             lingo_style_override=profile.lingo_style_override,
+            tone_sample_buffer=buffer,
+            generated_tone=profile.generated_tone,
         )
 
     def prompt_guidance(self, profile: GroupStyleProfile) -> str:
@@ -133,7 +166,7 @@ class StyleProfileService:
             if profile.discourse_particles
             else "none"
         )
-        tone = _LINGO_TONE_GUIDANCE.get(profile.lingo_style, _LINGO_TONE_GUIDANCE["mixed"])
+        tone = tone_prompt_block(profile)
         return (
             f"Use a familiar composite group tone. Dominant languages: {languages}. "
             f"Average length: {profile.average_length:.1f} chars. "

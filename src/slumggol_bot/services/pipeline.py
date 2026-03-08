@@ -30,7 +30,7 @@ from slumggol_bot.services.cache import (
 from slumggol_bot.services.factcheck import FactCheckService
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
-from slumggol_bot.services.style_profiles import StyleProfileService
+from slumggol_bot.services.style_profiles import StyleProfileService, should_regenerate_tone
 from slumggol_bot.services.language import LanguageConflict, detect_conflict
 from slumggol_bot.services.rate_limit import RateLimiter
 from slumggol_bot.transport.base import TransportAdapter
@@ -100,6 +100,34 @@ class PipelineOrchestrator:
 
         profile = GroupStyleProfile.model_validate(group.style_profile or {})
         updated_profile = self.style_profile_service.update_profile(profile, message)
+
+        # ── Tone re-inference (every 100 messages, non-blocking) ─────────────
+        if should_regenerate_tone(updated_profile):
+            import asyncio
+            from slumggol_bot.services.style_profiles import tone_inference_prompt
+            tone_prompt = tone_inference_prompt(updated_profile)
+            try:
+                tone_response = await self.factcheck_service.client.client.responses.create(
+                    model=self.factcheck_service.client.settings.openai_model,
+                    max_output_tokens=200,
+                    store=False,
+                    input=[{"role": "user", "content": [{"type": "input_text", "text": tone_prompt}]}],
+                )
+                generated_tone = tone_response.output_text or ""
+                if generated_tone.strip():
+                    updated_profile = updated_profile.model_copy(
+                        update={"generated_tone": generated_tone.strip()}
+                    )
+                    logger.info(
+                        "Tone re-inferred group_id=%s message_count=%s",
+                        message.group_id,
+                        updated_profile.message_count,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Tone re-inference failed group_id=%s",
+                    message.group_id,
+                )
         await self.group_repo.update_style_profile(group, updated_profile)
 
         hash_observations = await self.hash_observation_store.record(

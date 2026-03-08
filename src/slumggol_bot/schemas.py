@@ -42,6 +42,8 @@ class GroupStyleProfile(BaseModel):
     message_count: int = 0
     lingo_style: str = "mixed"
     lingo_style_override: str | None = None
+    tone_sample_buffer: list[str] = Field(default_factory=list)
+    generated_tone: str | None = None
 
 
 class NormalizedMessage(BaseModel):
