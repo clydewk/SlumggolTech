@@ -64,3 +64,21 @@ class HotClaimEntry(Base):
     score: Mapped[float] = mapped_column(Float)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EscalationQueueEntry(Base):
+    __tablename__ = "escalation_queue"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    group_id: Mapped[str] = mapped_column(String(128), index=True)
+    message_id: Mapped[str] = mapped_column(String(128), index=True)
+    claim_key: Mapped[str | None] = mapped_column(String(128))
+    canonical_claim_en: Mapped[str] = mapped_column(Text)
+    verdict: Mapped[str] = mapped_column(String(32))
+    confidence: Mapped[float] = mapped_column(Float)
+    evidence_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reviewer_note: Mapped[str | None] = mapped_column(Text)
+    corrected_reply: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
