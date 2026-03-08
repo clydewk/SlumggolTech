@@ -92,6 +92,7 @@ docker compose --profile tunnel up --build -d --remove-orphans
 - Webhook mode still requires a public HTTPS endpoint; local-only `localhost` webhooks will not work.
 - Manual fact-checking supports both `/factcheck <claim>` and replying to a message with `@<bot_username>` to trigger a check of the replied message.
 - Users can continue the thread by replying to a bot fact-check message with follow-up questions; the bot answers in-thread using Telegram reply mode.
+- Bot replies include inline translation buttons. Users can translate each bot message once per target language (English, Chinese, Malay, Tamil), and duplicate translation requests for the same message/language are blocked.
 - The optional `cloudflared` Compose profile is only there to expose `api:8000` to Telegram during local development when `TELEGRAM_INGEST_MODE=webhook`.
 - The optional `webhook-sync` Compose service watches the Cloudflare quick-tunnel URL and re-registers the Telegram webhook automatically after tunnel restarts.
 - `./scripts/set_telegram_webhook.sh` registers the bot against `${PUBLIC_WEBHOOK_URL}/webhooks/telegram`.

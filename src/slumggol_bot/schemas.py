@@ -55,6 +55,8 @@ class NormalizedMessage(BaseModel):
     content_kind: ContentKind
     command_name: str | None = None
     command_arg_text: str = ""
+    callback_query_id: str | None = None
+    callback_data: str = ""
     text: str = ""
     quoted_text: str = ""
     caption: str = ""
@@ -142,11 +144,6 @@ class ReplyVersion(BaseModel):
     text: str
 
 
-class ReplyVersion(BaseModel):
-    language: str
-    text: str
-
-
 class FactCheckResult(BaseModel):
     needs_reply: bool
     verdict: Verdict
@@ -164,6 +161,13 @@ class FactCheckResult(BaseModel):
     cache_match_type: str | None = None
     cache_match_distance: int | None = None
     claim_key: str | None = None
+
+
+class TranslationResult(BaseModel):
+    source_language: Literal["en", "zh", "ms", "ta", "other"] = "other"
+    target_language: Literal["en", "zh", "ms", "ta"]
+    needs_translation: bool = True
+    translated_text: str = ""
 
 
 class HotClaim(BaseModel):
