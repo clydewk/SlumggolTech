@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 # Languages we treat as mutually intelligible / same-family for conflict purposes.
-_SAME_FAMILY: frozenset[frozenset[str]] = frozenset({
-    frozenset({"zh", "zh-hans", "zh-hant", "zh-sg", "zh-tw", "zh-cn"}),
-    frozenset({"ms", "id"}),
-})
+_SAME_FAMILY: frozenset[frozenset[str]] = frozenset(
+    {
+        frozenset({"zh", "zh-hans", "zh-hant", "zh-sg", "zh-tw", "zh-cn"}),
+        frozenset({"ms", "id"}),
+    }
+)
 
 
 def _family(lang: str) -> frozenset[str]:
@@ -37,8 +38,7 @@ def detect_conflict(
         return None
 
     foreign = [
-        lang for lang in message_languages
-        if all(_conflicts(lang, g) for g in group_languages)
+        lang for lang in message_languages if all(_conflicts(lang, g) for g in group_languages)
     ]
     if not foreign:
         return None

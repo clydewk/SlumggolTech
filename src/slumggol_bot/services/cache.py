@@ -206,7 +206,10 @@ class RedisHotClaimStore:
             simhash_band_values(text_simhash, band_count=self.max_distance + 1)
         ):
             key = f"hot-simhash-band:{index}:{band_value}"
-            await self.redis.sadd(key, _hot_claim_member(claim_key, text_simhash))
+            await cast(
+                Awaitable[int],
+                self.redis.sadd(key, _hot_claim_member(claim_key, text_simhash)),
+            )
             await self.redis.expire(key, ttl_seconds)
 
 

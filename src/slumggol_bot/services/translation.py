@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from collections.abc import Awaitable
+from typing import Any, Protocol, cast
 
 from redis.asyncio import Redis
 
@@ -169,7 +170,12 @@ class RedisTranslationStateStore:
         language_code: str,
     ) -> bool:
         key = f"translation-done:{group_id}:{root_message_id}"
-        return bool(await self.redis.sismember(key, language_code))
+        return bool(
+            await cast(
+                Awaitable[int],
+                self.redis.sismember(key, language_code),
+            )
+        )
 
     async def mark_language(
         self,
@@ -179,7 +185,7 @@ class RedisTranslationStateStore:
         language_code: str,
     ) -> None:
         key = f"translation-done:{group_id}:{root_message_id}"
-        await self.redis.sadd(key, language_code)
+        await cast(Awaitable[int], self.redis.sadd(key, language_code))
         await self.redis.expire(key, TRANSLATION_TTL_SECONDS)
 
     async def claim_language(
@@ -190,7 +196,7 @@ class RedisTranslationStateStore:
         language_code: str,
     ) -> bool:
         key = f"translation-done:{group_id}:{root_message_id}"
-        was_added = await self.redis.sadd(key, language_code)
+        was_added = await cast(Awaitable[int], self.redis.sadd(key, language_code))
         await self.redis.expire(key, TRANSLATION_TTL_SECONDS)
         return bool(was_added)
 

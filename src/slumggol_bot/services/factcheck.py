@@ -20,8 +20,8 @@ from slumggol_bot.schemas import (
     GroupStyleProfile,
     ModelUsage,
     NormalizedMessage,
-    TranslationResult,
     RiskLevel,
+    TranslationResult,
     Verdict,
 )
 from slumggol_bot.services.cache import HotClaimStore
@@ -204,9 +204,8 @@ class OpenAIFactCheckClient:
                 break
             except (ValidationError, ValueError):
                 incomplete_reason = _response_incomplete_reason(response)
-                if (
-                    incomplete_reason == "max_output_tokens"
-                    and attempt < len(_FACTCHECK_OUTPUT_TOKEN_BUDGETS)
+                if incomplete_reason == "max_output_tokens" and attempt < len(
+                    _FACTCHECK_OUTPUT_TOKEN_BUDGETS
                 ):
                     logger.warning(
                         (
@@ -243,6 +242,7 @@ class OpenAIFactCheckClient:
             raise RuntimeError("OpenAI factcheck response was not created.")
 
         from slumggol_bot.schemas import ReplyVersion  # noqa: PLC0415
+
         result = FactCheckResult(
             needs_reply=parsed_payload.needs_reply,
             verdict=parsed_payload.verdict,
@@ -303,10 +303,7 @@ class OpenAIFactCheckClient:
         )
         responses_api: Any = self.client.responses
         logger.info(
-            (
-                "Calling OpenAI followup group_id=%s message_id=%s model=%s "
-                "max_output_tokens=%s"
-            ),
+            ("Calling OpenAI followup group_id=%s message_id=%s model=%s max_output_tokens=%s"),
             message.group_id,
             message.message_id,
             self.settings.openai_model,
@@ -840,13 +837,9 @@ def _cached_factcheck_result(
         evidence=[EvidenceSource.model_validate(item) for item in cached.evidence_json],
         claim_category=ClaimCategory(getattr(cached, "claim_category", ClaimCategory.OTHER.value)),
         risk_level=RiskLevel(getattr(cached, "risk_level", RiskLevel.LOW.value)),
-        actionability=Actionability(
-            getattr(cached, "actionability", Actionability.MONITOR.value)
-        ),
+        actionability=Actionability(getattr(cached, "actionability", Actionability.MONITOR.value)),
         has_official_sg_source=bool(getattr(cached, "has_official_sg_source", False)),
-        official_source_domain_count=int(
-            getattr(cached, "official_source_domain_count", 0) or 0
-        ),
+        official_source_domain_count=int(getattr(cached, "official_source_domain_count", 0) or 0),
         cache_hit=True,
         cache_match_type=cache_match_type,
         cache_match_distance=cache_match_distance,
