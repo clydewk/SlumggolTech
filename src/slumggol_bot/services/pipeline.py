@@ -306,7 +306,7 @@ class PipelineOrchestrator:
             for version in versions_to_send:
                 await self.transport.send_group_message(
                     message.group_id,
-                    version.text,
+                    _ensure_source(version.text, result),
                     reply_to_message_id=message.transport_message_id,
                 )
             await self.analytics_sink.write([reply_event(message, result)])
@@ -354,6 +354,19 @@ class PipelineOrchestrator:
                     message.group_id,
                     message.message_id,
                 )
+
+
+def _ensure_source(text: str, result: FactCheckResult) -> str:
+    """Append source URL from evidence if reply_text is missing a Source line."""
+    if "Source:" in text:
+        if result.evidence:
+            source = result.evidence[0]
+            return f"{text.rstrip()} — {source.url}"
+        return text
+    if not result.evidence:
+        return text
+    source = result.evidence[0]
+    return f"{text.rstrip()} Source: {source.title} — {source.url}"
 
 
 def should_reply(result: FactCheckResult) -> bool:
