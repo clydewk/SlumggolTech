@@ -22,6 +22,10 @@ from slumggol_bot.services.cache import (
     HotClaimStore,
     TextSimHashObservationStore,
 )
+from slumggol_bot.services.escalation import (
+    EscalationRepository,
+    should_escalate,
+)
 from slumggol_bot.services.factcheck import FactCheckService
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
