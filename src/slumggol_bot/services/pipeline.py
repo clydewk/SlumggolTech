@@ -27,6 +27,7 @@ from slumggol_bot.services.escalation import (
     should_escalate,
 )
 from slumggol_bot.services.factcheck import FactCheckService
+from slumggol_bot.services.freshness import freshness_caveat, score_evidence
 from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.hashing import compute_text_hash, compute_text_simhash
 from slumggol_bot.services.language import detect_conflict
@@ -247,6 +248,11 @@ class PipelineOrchestrator:
             style_profile=updated_profile,
             language_conflict=language_conflict,
         )
+        freshness_score = score_evidence(result.evidence)
+        result.source_freshness_score = freshness_score
+        caveat = freshness_caveat(freshness_score, result.evidence)
+        if caveat is not None and not result.reply_versions:
+            result.reply_text = append_reply_caveat(result.reply_text, caveat)
 
         await self.analytics_sink.write(
             [
@@ -301,7 +307,7 @@ class PipelineOrchestrator:
             for version in versions_to_send:
                 await self._send_bot_reply(
                     group_id=message.group_id,
-                    reply_text=version.text,
+                    reply_text=ensure_source_attribution(version.text, result),
                     reply_to_message_id=message.transport_message_id,
                     language_code=normalize_language_code(result.reply_language),
                 )
@@ -564,6 +570,39 @@ def build_factcheck_command_reply(result: FactCheckResult) -> str:
     if not source_lines:
         return "\n".join([summary, detail])
     return "\n".join([summary, detail, "Sources:", *source_lines])
+
+
+def append_reply_caveat(text: str, caveat: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return caveat
+    if caveat in stripped:
+        return stripped
+    return f"{stripped} {caveat}"
+
+
+def ensure_source_attribution(text: str, result: FactCheckResult) -> str:
+    stripped = text.rstrip()
+    if "Source:" in stripped:
+        return stripped
+
+    source = next(
+        (
+            item
+            for item in result.evidence
+            if item.title.strip() and item.url.strip()
+        ),
+        None,
+    )
+    if source is None:
+        return stripped
+    if source.url in stripped:
+        return stripped
+
+    source_line = f"Source: {source.title} - {source.url}"
+    if not stripped:
+        return source_line
+    return f"{stripped}\n{source_line}"
 
 
 def fallback_factcheck_command_reply(result: FactCheckResult) -> str:

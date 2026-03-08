@@ -19,6 +19,7 @@ from slumggol_bot.schemas import (
 from slumggol_bot.services.pipeline import (
     PipelineOrchestrator,
     build_factcheck_command_reply,
+    ensure_source_attribution,
     message_for_assessment,
     should_reply,
 )
@@ -553,6 +554,102 @@ async def test_auto_reply_quotes_original_message() -> None:
     assert result is not None
     assert transport.sent_messages
     assert transport.sent_messages[0][2] == 99
+    assert "Source: MOH - https://www.moh.gov.sg" in transport.sent_messages[0][1]
+
+
+def test_ensure_source_attribution_does_not_duplicate_existing_source() -> None:
+    result = FactCheckResult(
+        needs_reply=True,
+        verdict=Verdict.FALSE,
+        confidence=0.95,
+        canonical_claim_en="canonical claim",
+        reply_language="English",
+        reply_text="Countermessage",
+        evidence=[
+            EvidenceSource(title="MOH", url="https://www.moh.gov.sg", domain="moh.gov.sg"),
+        ],
+        usage=ModelUsage(),
+        claim_key="claim-key-1",
+    )
+
+    reply_text = ensure_source_attribution(
+        "Countermessage\nSource: MOH - https://www.moh.gov.sg",
+        result,
+    )
+
+    assert reply_text.count("Source:") == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_adds_stale_source_caveat() -> None:
+    class AlwaysCandidateGate:
+        def decide(self, **kwargs) -> CandidateDecision:  # noqa: ANN003, ARG002
+            return CandidateDecision(candidate=True)
+
+    class StaleSourceFactCheckService(FakeFactCheckService):
+        async def assess_candidate(
+            self,
+            *,
+            message: NormalizedMessage,
+            style_profile: GroupStyleProfile,  # noqa: ARG002
+            language_conflict=None,  # noqa: ANN001, ARG002
+        ) -> FactCheckResult:
+            self.messages.append(message)
+            return FactCheckResult(
+                needs_reply=True,
+                verdict=Verdict.FALSE,
+                confidence=0.95,
+                canonical_claim_en="canonical claim",
+                reply_language="English",
+                reply_text="This is not correct.",
+                evidence=[
+                    EvidenceSource(
+                        title="Archive",
+                        url="https://example.com/archive",
+                        domain="example.com",
+                        published_at="2020-01-01",
+                    ),
+                    EvidenceSource(
+                        title="Archive Mirror",
+                        url="https://mirror.example.com/archive",
+                        domain="mirror.example.com",
+                        published_at="2020-02-01",
+                    ),
+                ],
+                usage=ModelUsage(),
+                claim_key="claim-key-1",
+            )
+
+    transport = FakeTransport()
+    orchestrator = PipelineOrchestrator(
+        session=FakeSession(),
+        transport=transport,
+        analytics_sink=FakeAnalyticsSink(),
+        hash_observation_store=FakeHashObservationStore(),
+        text_simhash_observation_store=FakeTextSimHashObservationStore(),
+        hot_claim_store=FakeHotClaimStore(),
+        candidate_gate=AlwaysCandidateGate(),
+        factcheck_service=StaleSourceFactCheckService(),
+        style_profile_service=FakeStyleProfileService(),
+    )
+    orchestrator.group_repo = FakeGroupRepo()
+
+    message = NormalizedMessage(
+        occurred_at=datetime.now(UTC),
+        group_id="-100123",
+        message_id="-100123:101",
+        transport_message_id=101,
+        sender_id="42",
+        content_kind=ContentKind.TEXT,
+        text="Forward this warning now",
+        text_sha256="hash-101",
+    )
+
+    result = await orchestrator.process_message(message)
+
+    assert result is not None
+    assert result.source_freshness_score == 0.3
+    assert "newest source I found is from 2020" in transport.sent_messages[0][1]
 
 
 def test_message_for_assessment_uses_quoted_text_for_factcheck_command() -> None:

@@ -178,6 +178,7 @@ class FactCheckResult(BaseModel):
     cache_hit: bool = False
     cache_match_type: str | None = None
     cache_match_distance: int | None = None
+    source_freshness_score: float = 1.0
     claim_key: str | None = None
 
 
@@ -190,6 +191,7 @@ class TranslationResult(BaseModel):
 
 class HotClaim(BaseModel):
     hash_key: str
+    source_freshness_score: float = 1.0
     claim_key: str | None = None
     text_simhash: str | None = None
     reason: str
