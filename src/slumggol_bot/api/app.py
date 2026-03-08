@@ -36,6 +36,7 @@ from slumggol_bot.services.gating import CandidateGate
 from slumggol_bot.services.outbreak import OutbreakService
 from slumggol_bot.services.pipeline import PipelineOrchestrator
 from slumggol_bot.services.style_profiles import StyleProfileService
+from slumggol_bot.services.rate_limit import RateLimiter
 from slumggol_bot.transport.base import TransportAdapter
 from slumggol_bot.transport.telegram import TelegramTransport
 
