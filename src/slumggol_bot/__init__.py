@@ -1,1 +1,1 @@
-"""Slumggol fact-check bot."""
+"""IsRealANot fact-check bot."""

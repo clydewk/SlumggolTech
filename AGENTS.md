@@ -1,4 +1,4 @@
-# Slumggol Bot Agent Guide
+# IsRealANot Agent Guide
 
 ## Purpose
 

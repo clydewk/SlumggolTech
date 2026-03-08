@@ -160,7 +160,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     analytics_sink, analytics_query_service = _build_analytics(settings)
     redis = get_redis()
-    app = FastAPI(title="Slumggol Bot", version="0.1.0")
+    app = FastAPI(title="IsRealANot", version="0.1.0")
     app.state.settings = settings
     app.state.analytics_sink = analytics_sink
     app.state.analytics_query_service = analytics_query_service

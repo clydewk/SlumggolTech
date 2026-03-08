@@ -8,7 +8,7 @@
 
 > Quiet, evidence-first fact-checking for noisy Telegram group chats.
 
-Slumggol Bot is a Hackomania project built for Singapore group chats, where rumours, scam forwards, policy confusion, and low-context screenshots can spread faster than people can verify them. The bot stays mostly dormant, checks only the messages that look worth checking, and replies only when the evidence is strong enough.
+IsRealANot is a Hackomania project built for Singapore group chats, where rumours, scam forwards, policy confusion, and low-context screenshots can spread faster than people can verify them. The bot stays mostly dormant, checks only the messages that look worth checking, and replies only when the evidence is strong enough.
 
 This is not a "fact-check everything" bot. It is a selective, safety-minded system that combines GPT-5.4, Telegram-native UX, and ClickHouse analytics to reduce real-world harm without flooding chats with bot spam.
 
@@ -16,7 +16,7 @@ This is not a "fact-check everything" bot. It is a selective, safety-minded syst
 
 Group chats are where misinformation becomes social proof. A single forwarded message in the right family, school, workplace, or neighborhood chat can trigger panic, amplify scams, or spread harmful advice long before anyone opens a browser tab.
 
-Slumggol is designed to meet people where that happens:
+IsRealANot is designed to meet people where that happens:
 
 - clearly assess whether a claim looks credible, uncertain, or misleading
 - surface useful context and cited evidence, not just a label

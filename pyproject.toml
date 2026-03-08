@@ -1,7 +1,7 @@
 [project]
-name = "slumggol-bot"
+name = "isrealanot"
 version = "0.1.0"
-description = "Telegram fact-check bot with GPT-5.4 and ClickHouse analytics."
+description = "IsRealANot: Telegram fact-check bot with GPT-5.4 and ClickHouse analytics."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
