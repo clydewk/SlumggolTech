@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository contains a Telegram fact-check bot for Singapore group chats. The implemented bot stays mostly dormant, uses heuristic gating plus hot-claim reuse to pick candidates, runs GPT-5.4 fact-checks on those candidates, and posts a corrective reply only when stricter reply thresholds pass. It also supports manual `/factcheck` checks, in-thread follow-up questions, and per-message translation buttons.
+This repository contains a Telegram fact-check bot for Singapore group chats. The implemented bot stays mostly dormant, uses heuristic gating plus hot-claim reuse to pick candidates, runs GPT-5.4 fact-checks on those candidates, and posts a corrective reply only when stricter reply thresholds pass. It also supports manual `/factcheck` checks, in-thread follow-up questions, per-message translation buttons, and an optional Sea-Lion language-assist layer for Southeast Asian phrasing.
 
 ## Architecture Rules
 
@@ -10,7 +10,8 @@ This repository contains a Telegram fact-check bot for Singapore group chats. Th
 - Redis is used for ARQ worker coordination and transient state only: rate limits, hash/simhash observations, hot-claim prewarming, and translation state.
 - ClickHouse Cloud is analytics-only. It powers rollups, dashboard queries, and outbreak discovery, but it is never the source of truth for synchronous bot behavior.
 - `Telegram Bot API` is the only transport adapter in this repo. FastAPI handles webhook ingress, and `slumggol-poller` handles polling ingress.
-- `GPT-5.4` is the only model on the normal path for fact-checks, follow-up answers, and translations.
+- `GPT-5.4` is the only model that produces fact-check verdicts, follow-up answers, and translations on the normal path.
+- Optional `Sea-Lion` assistance may be used only as a paraphrase or interpretation aid for Southeast Asian phrasing. It must never supply verdicts, evidence, or replace the GPT-5.4 fact-check path.
 - `gpt-4o-transcribe` is the only voice-note transcription model on the normal path.
 - Raw inbound text, image bytes, audio bytes, and transcripts must not be persisted. Persist only hashes, derived claims, style aggregates, bot outputs, escalation records, and analytics-safe metadata.
 - Images go directly into the GPT request. There is no separate OCR service in this codebase.
@@ -25,6 +26,7 @@ This repository contains a Telegram fact-check bot for Singapore group chats. Th
 - Manual fact-checking works through `/factcheck <claim>` or by replying to a message and mentioning `@<bot_username>`.
 - Users can ask follow-up questions by replying to a bot fact-check message; the bot answers in-thread.
 - Bot replies include translation buttons. Users can translate a bot message once per target language (`en`, `zh`, `ms`, `ta`), and translation dedupes across the full translation thread root.
+- Optional Sea-Lion assist can run for `/factcheck`, forwarded messages, or Southeast Asian language inputs when enabled, but GPT-5.4 still performs the final fact-check.
 - Automatic replies currently require:
   - `needs_reply=True`
   - verdict in `false`, `misleading`, or `unsupported`
@@ -54,6 +56,7 @@ This repository contains a Telegram fact-check bot for Singapore group chats. Th
 - `src/slumggol_bot/services/escalation.py`: escalation policy and repository wrapper
 - `src/slumggol_bot/services/freshness.py`: evidence recency scoring and stale-source caveats
 - `src/slumggol_bot/services/rate_limit.py`: Redis-backed user/group throttling
+- `src/slumggol_bot/services/sealion.py`: optional Sea-Lion client and Southeast Asian language-assist parsing
 - `src/slumggol_bot/services/style_profiles.py`: group tone profiling used to steer model replies
 - `src/slumggol_bot/services/language.py`: language-conflict prompt helper for multilingual reply versions
 - `src/slumggol_bot/services/hashing.py`: text/media hashing and simhash utilities
@@ -103,6 +106,7 @@ This repository contains a Telegram fact-check bot for Singapore group chats. Th
 - Schema changes must go through Alembic.
 - ClickHouse schema or view changes must update both `sql/clickhouse_bot_analytics.sql` and `sql/clickhouse_bot_analytics_migrate_v2.sql`.
 - Prompt changes must update any tests or fixtures that validate the prompt contract or parsed response shape.
+- Sea-Lion changes must remain auxiliary only: no verdicting, no evidence sourcing, and no replacement of the GPT-5.4 fact-check path.
 - If you change reply thresholds, update both configuration and `services/pipeline.should_reply`; the current runtime logic uses hardcoded thresholds rather than `AppSettings.reply_confidence_threshold` and `AppSettings.min_sources_required`.
 - If you implement demo-mode expiry or spend caps, wire them into the actual request path; the env settings exist today but are not enforced.
 - If you touch admin endpoints, keep bearer-token checks consistent across the entire `/admin/*` surface.
@@ -137,6 +141,7 @@ This repository contains a Telegram fact-check bot for Singapore group chats. Th
 ## Testing Rules
 
 - Mock OpenAI calls in unit tests.
+- Mock Sea-Lion calls in unit tests when touching the auxiliary language-assist path.
 - Mock Telegram Bot API calls in unit tests.
 - Verify admin routes reject missing or invalid bearer tokens.
 - Verify analytics failures do not change the reply path.

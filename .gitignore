@@ -4,4 +4,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
-*.env
+.env
+.env.*
+!.env.example
+.envrc
+docker-compose.override.yml

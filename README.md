@@ -1,50 +1,179 @@
 # Slumggol Bot
 
-Telegram fact-check bot scaffold built around:
+![Hackathon](https://img.shields.io/badge/Hackathon-Hackomania-111111?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
+![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat-square&logo=telegram&logoColor=white)
+![ClickHouse](https://img.shields.io/badge/ClickHouse-Analytics-FFCC01?style=flat-square&logo=clickhouse&logoColor=111111)
+![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.4-111111?style=flat-square)
 
-- `Telegram Bot API` for transport
-- `GPT-5.4` for single-pass candidate fact-checking
-- optional `Sea-Lion` language assist for Southeast Asian phrasing
-- `gpt-4o-transcribe` for voice notes
-- Postgres for authoritative bot state
-- Redis for queues and hot claim caches
-- ClickHouse Cloud for append-only analytics, outbreak rollups, and dashboard views
-- Metabase as an optional internal dashboard profile
+> Quiet, evidence-first fact-checking for noisy Telegram group chats.
 
-## Quickstart
+Slumggol Bot is a Hackomania project built for Singapore group chats, where rumours, scam forwards, policy confusion, and low-context screenshots can spread faster than people can verify them. The bot stays mostly dormant, checks only the messages that look worth checking, and replies only when the evidence is strong enough.
 
-1. Copy `.env.example` to `.env`.
-2. Set `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `ADMIN_API_TOKEN` in `.env`.
-3. Leave `TELEGRAM_INGEST_MODE=polling` for the default local-development path.
-4. Start local Postgres and Redis:
+This is not a "fact-check everything" bot. It is a selective, safety-minded system that combines GPT-5.4, Telegram-native UX, and ClickHouse analytics to reduce real-world harm without flooding chats with bot spam.
 
-```bash
-docker compose up -d postgres redis
+## Why this matters
+
+Group chats are where misinformation becomes social proof. A single forwarded message in the right family, school, workplace, or neighborhood chat can trigger panic, amplify scams, or spread harmful advice long before anyone opens a browser tab.
+
+Slumggol is designed to meet people where that happens:
+
+- clearly assess whether a claim looks credible, uncertain, or misleading
+- surface useful context and cited evidence, not just a label
+- work across mixed-language Southeast Asian chat patterns
+- reduce harm without over-censoring normal conversation
+
+## What the bot actually does
+
+- Monitors Telegram group chats through polling or webhook delivery.
+- Uses heuristic gating and hot-claim reuse so it does not spend model calls on every message.
+- Runs GPT-5.4 fact-checks only on likely candidates.
+- Auto-replies only for harmful misinformation that clears stricter thresholds.
+- Queues uncertain but important cases for escalation instead of bluffing.
+- Supports manual `/factcheck` checks, reply-in-thread follow-up questions, and one-tap translations.
+- Handles text, images, and voice notes on the normal path.
+- Adapts reply tone per group while keeping evidence and verdicting centralized.
+
+## Demo flow
+
+1. A claim appears in a Telegram group chat.
+2. The gate decides whether it looks risky, viral, or worth analysis.
+3. The bot checks caches and hot-claim intelligence before making a new model call.
+4. GPT-5.4 produces a verdict, confidence score, and evidence set.
+5. The bot replies only when the result is strong enough to justify interrupting the chat.
+6. ClickHouse updates analytics so operators can see spread, reuse, and outbreak patterns across groups.
+
+## Screenshots
+
+<!-- Replace the remaining placeholders with real screenshots before final submission. -->
+
+| Telegram fact-check thread | Analytics dashboard | Translation UX |
+| --- | --- | --- |
+| ![Telegram fact-check placeholder](docs/screenshots/telegram-thread-placeholder.svg) | ![Analytics dashboard](dashboard.jpg) | ![Translation UX placeholder](docs/screenshots/translation-placeholder.svg) |
+
+## Why ClickHouse is central
+
+ClickHouse is not here as a side database or a fancy log bucket. It is the analytics engine that makes the product operationally useful.
+
+Postgres is the source of truth for bot state. Redis handles transient coordination. ClickHouse handles the high-volume, append-only event stream and the rollups that answer the questions a real response team cares about in near real time.
+
+| Product question | Why it matters | Powered by |
+| --- | --- | --- |
+| Which claims are spiking right now? | Helps spot fast-moving misinformation before it spreads further. | `dashboard_trending_claims_24h` |
+| Which groups are seeing the same claim? | Shows cross-group spread instead of isolated chat noise. | `dashboard_claim_group_spread_24h` |
+| Which risky scams need immediate attention? | Surfaces the highest-harm content for response priority. | `dashboard_high_risk_scams_24h` |
+| What is the operational picture over the last 24h? | Tracks volume, reply coverage, and model spend. | `dashboard_summary_24h` |
+
+ClickHouse also powers outbreak refresh jobs and hot-claim intelligence. That means it directly improves how the bot prioritizes repeated claims, not just how the team views historical data later.
+
+## Trust and safety guardrails
+
+- Raw inbound text, image bytes, audio bytes, and transcripts are processed in memory and are not persisted.
+- Auto-replies currently require `needs_reply=True`, a verdict in `false`, `misleading`, or `unsupported`, confidence of at least `0.82`, and at least `2` evidence sources.
+- Public health and public safety claims require at least one Singapore-first or official source before an automatic reply is allowed.
+- Unclear but potentially important cases are escalated instead of auto-posted.
+- Analytics failures fail open. If ClickHouse is unavailable, the bot still runs.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["Telegram group chat"] --> B["Polling or webhook ingress"]
+    B --> C["Pipeline orchestration"]
+    C --> D["Heuristic gate + hot-claim reuse"]
+    D --> E["GPT-5.4 fact-check"]
+    E --> F["Reply, follow-up, translation"]
+    C --> G[("Postgres")]
+    C --> H[("Redis")]
+    C --> I[("ClickHouse")]
+    I --> J["Metabase dashboard"]
+    I --> K["Outbreak refresh"]
 ```
 
-5. Install dependencies:
+- `Postgres`: source of truth for group state, cached verdicts, style profiles, and escalation records.
+- `Redis`: transient coordination for queues, rate limits, hot-claim prewarming, and hash observations.
+- `ClickHouse`: analytics-only store for rollups, dashboards, and cross-group outbreak discovery.
+
+## Run it locally
+
+1. Copy `.env.example` to `.env` and set `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, and `ADMIN_API_TOKEN`.
+2. Start Postgres and Redis:
+
+   ```bash
+   docker compose up -d postgres redis
+   ```
+
+3. Install dependencies and run migrations:
+
+   ```bash
+   uv sync
+   uv run alembic upgrade head
+   ```
+
+4. Start the bot in the default local polling mode:
+
+   ```bash
+   docker compose --profile polling up --build
+   ```
+
+5. Create a Telegram bot with BotFather, disable privacy for group usage with `/setprivacy`, and add the bot to a test group.
+
+Useful development commands:
 
 ```bash
-uv sync
+uv run pytest
+uv run ruff check .
+uv run mypy src
 ```
 
-6. Run the Postgres migrations:
+<details>
+<summary>Optional: enable ClickHouse + dashboard</summary>
+
+Set these values in `.env`:
+
+```dotenv
+ENABLE_CLICKHOUSE=true
+CLICKHOUSE_URL=https://your-clickhouse-host:8443
+CLICKHOUSE_DATABASE=bot_analytics
+CLICKHOUSE_USER=slumggol_ingest
+CLICKHOUSE_PASSWORD=replace-with-password
+OUTBREAK_REFRESH_INTERVAL_MINUTES=5
+```
+
+Then run:
 
 ```bash
-uv run alembic upgrade head
+uv run python scripts/manage_clickhouse.py ping
+uv run python scripts/manage_clickhouse.py bootstrap
+uv run python scripts/manage_clickhouse.py smoke
+docker compose --profile polling --profile dashboard up --build
 ```
 
-7. Start the bot stack:
+The canonical schema lives in `sql/clickhouse_bot_analytics.sql`, and the upgrade path for existing services lives in `sql/clickhouse_bot_analytics_migrate_v2.sql`.
+
+</details>
+
+<details>
+<summary>Optional: run with Telegram webhooks instead of polling</summary>
+
+Set `TELEGRAM_INGEST_MODE=webhook`, expose the API on a public HTTPS URL, set `PUBLIC_WEBHOOK_URL`, then register it:
 
 ```bash
-docker compose --profile polling up --build
+./scripts/set_telegram_webhook.sh
 ```
 
-8. Create a Telegram bot with BotFather, disable bot privacy for groups with `/setprivacy`, and add the bot to the target group or supergroup.
+For local webhook development with a Cloudflare quick tunnel:
 
-## Optional Sea-Lion Language Assist
+```bash
+docker compose --profile tunnel up --build -d --remove-orphans
+```
 
-Sea-Lion support is optional. When enabled, the bot can use it as a paraphrase aid for Southeast Asian phrasing before GPT-5.4 performs the final fact-check.
+</details>
+
+<details>
+<summary>Optional: enable Sea-Lion language assist</summary>
+
+Sea-Lion is optional and can help interpret Southeast Asian phrasing before GPT-5.4 performs the final fact-check.
 
 ```dotenv
 SEALION_ENABLED=true
@@ -55,180 +184,15 @@ SEALION_ASSIST_ON_FACTCHECK_COMMAND=true
 SEALION_ASSIST_ON_FORWARDED_MESSAGES=true
 ```
 
-GPT-5.4 still produces the verdict, evidence, and final reply. Sea-Lion output is used only as an interpretation aid and is never treated as evidence.
+Sea-Lion never supplies the final verdict or evidence. GPT-5.4 remains the normal-path fact-check model.
 
-## OpenAI Request Tuning
+</details>
 
-The GPT-5.4 path now supports env-configurable Responses API tuning instead of hardcoded request settings.
+## Key files
 
-Global defaults:
-
-```dotenv
-OPENAI_REASONING_EFFORT=medium
-OPENAI_VERBOSITY=medium
-```
-
-Optional per-task overrides:
-
-```dotenv
-OPENAI_FACTCHECK_REASONING_EFFORT=medium
-OPENAI_FOLLOWUP_REASONING_EFFORT=minimal
-OPENAI_TRANSLATION_REASONING_EFFORT=minimal
-OPENAI_FACTCHECK_VERBOSITY=low
-OPENAI_FOLLOWUP_VERBOSITY=medium
-OPENAI_TRANSLATION_VERBOSITY=low
-```
-
-If a per-task override is unset, that request type falls back to the global default.
-
-## ClickHouse Cloud Setup
-
-Use ClickHouse Cloud for analytics and the dashboard views.
-
-1. Set these `.env` values before enabling ClickHouse:
-
-```dotenv
-ENABLE_CLICKHOUSE=true
-CLICKHOUSE_URL=https://your-clickhouse-host:8443
-CLICKHOUSE_DATABASE=bot_analytics
-CLICKHOUSE_USER=slumggol_ingest
-CLICKHOUSE_PASSWORD=replace-with-verified-password
-CLICKHOUSE_ASYNC_INSERT=1
-CLICKHOUSE_WAIT_FOR_ASYNC_INSERT=1
-OUTBREAK_REFRESH_INTERVAL_MINUTES=5
-```
-
-2. Create or verify the database and SQL users in ClickHouse Cloud. Recommended split:
-   - ingest user: `SELECT, INSERT` on `bot_analytics.*`
-   - dashboard user: `SELECT` on `bot_analytics.*`, `readonly=1`
-
-Example SQL to run in the ClickHouse Cloud SQL console:
-
-```sql
-CREATE DATABASE IF NOT EXISTS bot_analytics;
-
-CREATE USER IF NOT EXISTS slumggol_ingest IDENTIFIED BY 'replace-me';
-GRANT SELECT, INSERT ON bot_analytics.* TO slumggol_ingest;
-
-CREATE USER IF NOT EXISTS slumggol_dashboard IDENTIFIED BY 'replace-me';
-GRANT SELECT ON bot_analytics.* TO slumggol_dashboard;
-ALTER USER slumggol_dashboard SETTINGS readonly = 1;
-```
-
-3. Validate connectivity:
-
-```bash
-uv run python scripts/manage_clickhouse.py ping
-```
-
-4. Bootstrap a fresh service:
-
-```bash
-uv run python scripts/manage_clickhouse.py bootstrap
-```
-
-5. Or migrate an existing service with older rollups:
-
-```bash
-uv run python scripts/manage_clickhouse.py migrate_v2
-```
-
-6. Run a smoke check:
-
-```bash
-uv run python scripts/manage_clickhouse.py smoke
-```
-
-The canonical bootstrap DDL lives in `sql/clickhouse_bot_analytics.sql`. The upgrade path for existing services lives in `sql/clickhouse_bot_analytics_migrate_v2.sql`.
-
-## Optional Dashboard Profile
-
-This repo does not include a custom dashboard frontend. Instead, it ships an optional Metabase profile for a fast internal web dashboard.
-
-1. Add the Metabase settings to `.env`:
-
-```dotenv
-METABASE_PORT=3000
-METABASE_SITE_URL=http://localhost:3000
-```
-
-2. Start the local dashboard profile:
-
-```bash
-docker compose --profile polling --profile dashboard up --build
-```
-
-3. Open `http://localhost:3000` and complete the Metabase admin setup.
-4. Add a ClickHouse database connection using the read-only dashboard SQL user:
-   - host: your ClickHouse Cloud host
-   - port: `8443`
-   - database: `bot_analytics`
-   - SSL: enabled
-
-Build four dashboard pages in Metabase using these views:
-
-- `dashboard_summary_24h`
-- `dashboard_trending_claims_24h`
-- `dashboard_claim_group_spread_24h`
-- `dashboard_high_risk_scams_24h`
-
-Recommended layout:
-
-- `Overview`: candidate volume, fact-check volume, reply volume, spend, high-risk claims
-- `Trending Claims`: canonical claim, verdict, risk, groups reached, reply coverage
-- `Scam / Risk Watch`: high-risk scam claims and countermessage-ready rows
-- `Group Spread`: which groups are propagating each claim
-
-Keep Metabase internal-only. Put it behind an authenticated reverse proxy, SSO, VPN, or network restriction before sharing it with any external stakeholders.
-
-## Optional Webhook Mode
-
-If you want webhook delivery instead of polling:
-
-1. Set `TELEGRAM_INGEST_MODE=webhook` in `.env`.
-2. Expose the API on a public HTTPS URL, set `PUBLIC_WEBHOOK_URL` in `.env`, then register the webhook:
-
-```bash
-./scripts/set_telegram_webhook.sh
-```
-
-3. For local development with a Cloudflare quick tunnel and automatic webhook registration, start the optional tunnel profile:
-
-```bash
-docker compose --profile tunnel up --build -d --remove-orphans
-```
-
-## Admin API
-
-All `/admin/*` routes require:
-
-```http
-Authorization: Bearer <ADMIN_API_TOKEN>
-```
-
-The main admin endpoints now include:
-
-- `GET /admin/groups/{group_external_id}/metrics`
-- `POST /admin/outbreaks/refresh`
-- `GET /admin/dashboard/summary`
-- `GET /admin/dashboard/trending-claims`
-- `GET /admin/dashboard/claims/{claim_key}/groups`
-
-## Notes
-
-- The app is designed to run without ClickHouse in local development. Analytics failures must never block replies.
-- Raw inbound text, image bytes, audio bytes, and transcripts are processed in memory and not persisted.
-- Polling is the default local-development ingress path because it does not need a public HTTPS endpoint.
-- Polling mode and tunnel/webhook mode are mutually exclusive; stop `cloudflared` and `webhook-sync` before polling to prevent webhook re-registration and Telegram `409 Conflict` on `getUpdates`.
-- The poller disables any existing Telegram webhook on startup before calling `getUpdates`.
-- Webhook mode still requires a public HTTPS endpoint; local-only `localhost` webhooks will not work.
-- Manual fact-checking supports both `/factcheck <claim>` and replying to a message with `@<bot_username>` to trigger a check of the replied message.
-- Users can continue the thread by replying to a bot fact-check message with follow-up questions; the bot answers in-thread using Telegram reply mode.
-- Bot replies include inline translation buttons. Users can translate each bot message once per target language (English, Chinese, Malay, Tamil), and duplicate translation requests for the same message/language are blocked.
-- ClickHouse schemas and materialized views live in `sql/clickhouse_bot_analytics.sql`.
-- The worker now refreshes outbreak hot claims on a schedule; ClickHouse outages should degrade to “no outbreak refresh,” not “no bot.”
-- The optional `cloudflared` Compose profile is only there to expose `api:8000` to Telegram during local development when `TELEGRAM_INGEST_MODE=webhook`.
-- The optional `webhook-sync` Compose service watches the Cloudflare quick-tunnel URL and re-registers the Telegram webhook automatically after tunnel restarts.
-- `./scripts/set_telegram_webhook.sh` registers the bot against `${PUBLIC_WEBHOOK_URL}/webhooks/telegram`.
-- `./scripts/get_cloudflare_tunnel_url.sh` prints the current Cloudflare quick-tunnel URL from Docker logs.
-- `./scripts/debug_telegram.sh` calls `getMe` and `getWebhookInfo` for the configured bot token.
+- `src/slumggol_bot/services/pipeline.py` - core orchestration, gating, reply logic, follow-ups, translations, and analytics events
+- `src/slumggol_bot/services/factcheck.py` - GPT-5.4 requests, caching, transcription, follow-up, and translation calls
+- `src/slumggol_bot/services/analytics.py` - ClickHouse sink and dashboard query layer
+- `src/slumggol_bot/services/outbreak.py` - outbreak refresh service backed by analytics rollups
+- `src/slumggol_bot/transport/telegram.py` - Telegram parsing, callbacks, and send/edit behavior
+- `sql/clickhouse_bot_analytics.sql` - canonical ClickHouse schema, rollups, and dashboard views
