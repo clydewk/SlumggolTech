@@ -270,6 +270,17 @@ class PipelineOrchestrator:
                 language_code=normalize_language_code(result.reply_language),
             )
             await self.analytics_sink.write([reply_event(message, result)])
+        if should_escalate(result):
+            escalation_repo = EscalationRepository(self.session)
+            await escalation_repo.create(message=message, result=result)
+            logger.info(
+                "Escalation queued group_id=%s message_id=%s verdict=%s confidence=%.2f",
+                message.group_id,
+                message.message_id,
+                result.verdict.value,
+                result.confidence,
+            )
+
         elif should_reply(result):
             logger.info(
                 "Sending auto reply group_id=%s message_id=%s verdict=%s "

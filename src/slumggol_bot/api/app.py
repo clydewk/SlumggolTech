@@ -257,6 +257,89 @@ async def refresh_outbreaks(
     await session.commit()
     return {"refreshed": len(claims)}
 
+@app.get("/admin/escalations")
+async def list_escalations(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[dict]:
+    from slumggol_bot.services.escalation import EscalationRepository
+    repo = EscalationRepository(session)
+    entries = await repo.list_pending()
+    return [
+        {
+            "id": e.id,
+            "group_id": e.group_id,
+            "message_id": e.message_id,
+            "claim_key": e.claim_key,
+            "canonical_claim_en": e.canonical_claim_en,
+            "verdict": e.verdict,
+            "confidence": e.confidence,
+            "evidence": e.evidence_json,
+            "status": e.status,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+
+
+@app.post("/admin/escalations/{escalation_id}/approve")
+async def approve_escalation(
+    escalation_id: str,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> dict:
+    from slumggol_bot.services.escalation import EscalationRepository
+    repo = EscalationRepository(session)
+    entry = await repo.get(escalation_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Escalation not found.")
+    await repo.resolve(entry, status="approved")
+    await session.commit()
+    return {"id": entry.id, "status": entry.status}
+
+
+@app.post("/admin/escalations/{escalation_id}/correct")
+async def correct_escalation(
+    escalation_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> dict:
+    from slumggol_bot.services.escalation import EscalationRepository
+    repo = EscalationRepository(session)
+    entry = await repo.get(escalation_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Escalation not found.")
+    corrected_reply = body.get("reply_text", "").strip()
+    if not corrected_reply:
+        raise HTTPException(status_code=400, detail="reply_text is required.")
+    await repo.resolve(
+        entry,
+        status="corrected",
+        reviewer_note=body.get("reviewer_note"),
+        corrected_reply=corrected_reply,
+    )
+    transport = build_transport()
+    await transport.send_group_message(entry.group_id, corrected_reply)
+    await session.commit()
+    return {"id": entry.id, "status": entry.status}
+
+
+@app.post("/admin/escalations/{escalation_id}/escalate")
+async def escalate_further(
+    escalation_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> dict:
+    from slumggol_bot.services.escalation import EscalationRepository
+    repo = EscalationRepository(session)
+    entry = await repo.get(escalation_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Escalation not found.")
+    await repo.resolve(
+        entry,
+        status="escalated",
+        reviewer_note=body.get("reviewer_note"),
+    )
+    await session.commit()
+    return {"id": entry.id, "status": entry.status}
 
 @app.get("/admin/dashboard/summary")
 async def get_dashboard_summary(
