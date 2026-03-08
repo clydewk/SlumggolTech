@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from arq.connections import RedisSettings
+from arq.cron import cron
 from arq.worker import run_worker as arq_run_worker
 
 from slumggol_bot.api.app import (
@@ -36,10 +37,16 @@ async def refresh_outbreaks_job(ctx: dict) -> int:  # noqa: ARG001
         return len(claims)
 
 
+def _build_cron_jobs() -> list:
+    interval = max(1, min(get_settings().outbreak_refresh_interval_minutes, 60))
+    minutes = set(range(0, 60, interval))
+    return [cron(refresh_outbreaks_job, minute=minutes, second=0)]
+
+
 WORKER_SETTINGS: dict[str, Any] = {
     "functions": [refresh_outbreaks_job],
     "redis_settings": RedisSettings.from_dsn(get_settings().redis_url),
-    "cron_jobs": [],
+    "cron_jobs": _build_cron_jobs(),
 }
 
 

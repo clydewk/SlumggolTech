@@ -13,12 +13,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from slumggol_bot.config import AppSettings
 from slumggol_bot.schemas import (
+    Actionability,
+    ClaimCategory,
     EvidenceSource,
     FactCheckResult,
     GroupStyleProfile,
     ModelUsage,
     NormalizedMessage,
     TranslationResult,
+    RiskLevel,
     Verdict,
 )
 from slumggol_bot.services.cache import HotClaimStore
@@ -30,6 +33,7 @@ logger = logging.getLogger(__name__)
 _FACTCHECK_OUTPUT_TOKEN_BUDGETS = (1200, 2200)
 _FOLLOWUP_MAX_OUTPUT_TOKENS = 900
 _TRANSLATION_MAX_OUTPUT_TOKENS = 700
+_OFFICIAL_SOURCE_CATEGORIES = {"government", "public_health", "public_safety"}
 
 
 class ClaimCacheProtocol(Protocol):
@@ -48,14 +52,35 @@ class SourceRegistry:
     def __init__(self, path: Path) -> None:
         loaded = yaml.safe_load(path.read_text()) or {}
         self.domains: list[dict[str, Any]] = loaded.get("domains", [])
+        self._domain_map = {
+            _normalize_domain_value(str(item["domain"])): item
+            for item in self.domains
+            if item.get("domain")
+        }
 
     def preferred_domains(self) -> list[str]:
-        return [item["domain"] for item in self.domains]
+        return [str(item["domain"]) for item in self.domains if item.get("domain")]
 
     def prompt_hint(self) -> str:
         return "Prefer these Singapore-first domains when evaluating evidence: " + ", ".join(
             self.preferred_domains()
         )
+
+    def is_preferred_domain(self, domain: str) -> bool:
+        return _normalize_domain_value(domain) in self._domain_map
+
+    def is_official_domain(self, domain: str) -> bool:
+        item = self._domain_map.get(_normalize_domain_value(domain))
+        if item is None:
+            return False
+        category = str(item.get("category", "")).strip().lower()
+        return category in _OFFICIAL_SOURCE_CATEGORIES
+
+    def has_official_or_singapore_first_source(self, domains: list[str]) -> bool:
+        return any(self.is_preferred_domain(domain) for domain in domains)
+
+    def official_source_domain_count(self, domains: list[str]) -> int:
+        return sum(1 for domain in dict.fromkeys(domains) if self.is_official_domain(domain))
 
 
 class FactCheckResponsePayload(BaseModel):
@@ -70,6 +95,9 @@ class FactCheckResponsePayload(BaseModel):
     reply_versions: list[dict[str, str]] = Field(default_factory=list)  # NEW
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
+    claim_category: ClaimCategory = ClaimCategory.OTHER
+    risk_level: RiskLevel = RiskLevel.LOW
+    actionability: Actionability = Actionability.MONITOR
 
 
 class TranslationResponsePayload(BaseModel):
@@ -230,7 +258,17 @@ class OpenAIFactCheckClient:
             ],
             reason_codes=parsed_payload.reason_codes,
             evidence=parsed_payload.evidence,
+            claim_category=parsed_payload.claim_category,
+            risk_level=parsed_payload.risk_level,
+            actionability=parsed_payload.actionability,
             usage=_usage_from_response(response, self.settings, allow_web_search),
+        )
+        evidence_domains = [source.domain for source in result.evidence if source.domain]
+        result.has_official_sg_source = registry.has_official_or_singapore_first_source(
+            evidence_domains
+        )
+        result.official_source_domain_count = registry.official_source_domain_count(
+            evidence_domains
         )
         result.claim_key = compute_text_hash(result.canonical_claim_en)
         return result
@@ -410,6 +448,18 @@ def _factcheck_output_format() -> dict[str, Any]:
                     "items": {"type": "string", "maxLength": 64},
                     "maxItems": 8,
                 },
+                "claim_category": {
+                    "type": "string",
+                    "enum": [member.value for member in ClaimCategory],
+                },
+                "risk_level": {
+                    "type": "string",
+                    "enum": [member.value for member in RiskLevel],
+                },
+                "actionability": {
+                    "type": "string",
+                    "enum": [member.value for member in Actionability],
+                },
                 "evidence": {
                     "type": "array",
                     "maxItems": 2,
@@ -438,6 +488,9 @@ def _factcheck_output_format() -> dict[str, Any]:
                 "reply_text",
                 "reply_versions",
                 "reason_codes",
+                "claim_category",
+                "risk_level",
+                "actionability",
                 "evidence",
             ],
         },
@@ -785,8 +838,24 @@ def _cached_factcheck_result(
         reply_language=cached.reply_language,
         reply_text=cached.reply_template,
         evidence=[EvidenceSource.model_validate(item) for item in cached.evidence_json],
+        claim_category=ClaimCategory(getattr(cached, "claim_category", ClaimCategory.OTHER.value)),
+        risk_level=RiskLevel(getattr(cached, "risk_level", RiskLevel.LOW.value)),
+        actionability=Actionability(
+            getattr(cached, "actionability", Actionability.MONITOR.value)
+        ),
+        has_official_sg_source=bool(getattr(cached, "has_official_sg_source", False)),
+        official_source_domain_count=int(
+            getattr(cached, "official_source_domain_count", 0) or 0
+        ),
         cache_hit=True,
         cache_match_type=cache_match_type,
         cache_match_distance=cache_match_distance,
         claim_key=claim_key,
     )
+
+
+def _normalize_domain_value(domain: str) -> str:
+    normalized = domain.strip().lower()
+    if normalized.startswith("www."):
+        return normalized[4:]
+    return normalized

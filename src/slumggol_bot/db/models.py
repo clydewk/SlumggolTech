@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -39,6 +39,11 @@ class ClaimCacheEntry(Base):
     reply_language: Mapped[str] = mapped_column(String(32))
     reply_template: Mapped[str] = mapped_column(Text)
     evidence_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    claim_category: Mapped[str] = mapped_column(String(32), default="other")
+    risk_level: Mapped[str] = mapped_column(String(32), default="low")
+    actionability: Mapped[str] = mapped_column(String(32), default="monitor")
+    has_official_sg_source: Mapped[bool] = mapped_column(Boolean, default=False)
+    official_source_domain_count: Mapped[int] = mapped_column(Integer, default=0)
     source_quality_score: Mapped[float] = mapped_column(Float, default=0.0)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime] = mapped_column(

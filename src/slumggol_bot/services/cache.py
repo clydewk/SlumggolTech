@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
 from redis.asyncio import Redis
 
@@ -87,9 +88,7 @@ class InMemoryHotClaimStore:
     async def replace(self, claims: list[HotClaim], ttl_seconds: int) -> None:  # noqa: ARG002
         self._claims = {claim.hash_key: claim for claim in claims}
         self._simhash_claims = {
-            claim.claim_key: claim
-            for claim in claims
-            if claim.claim_key and claim.text_simhash
+            claim.claim_key: claim for claim in claims if claim.claim_key and claim.text_simhash
         }
 
     async def remember_claim(
@@ -140,7 +139,12 @@ class RedisHotClaimStore:
         members: set[str] = set()
         band_values = simhash_band_values(text_simhash, band_count=max_distance + 1)
         for index, band_value in enumerate(band_values):
-            members.update(await self.redis.smembers(f"hot-simhash-band:{index}:{band_value}"))
+            members.update(
+                await cast(
+                    Awaitable[set[str]],
+                    self.redis.smembers(f"hot-simhash-band:{index}:{band_value}"),
+                )
+            )
         best_match: HotClaimMatch | None = None
         for member in members:
             claim_key, candidate_simhash = _parse_hot_claim_member(member)
@@ -176,7 +180,10 @@ class RedisHotClaimStore:
                 simhash_band_values(claim.text_simhash, band_count=self.max_distance + 1)
             ):
                 key = f"hot-simhash-band:{index}:{band_value}"
-                await self.redis.sadd(key, _hot_claim_member(claim.claim_key, claim.text_simhash))
+                await cast(
+                    Awaitable[int],
+                    self.redis.sadd(key, _hot_claim_member(claim.claim_key, claim.text_simhash)),
+                )
                 await self.redis.expire(key, ttl_seconds)
 
     async def remember_claim(

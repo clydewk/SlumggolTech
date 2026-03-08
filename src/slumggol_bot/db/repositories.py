@@ -75,6 +75,11 @@ class ClaimCacheRepository:
                 reply_language=result.reply_language,
                 reply_template=result.reply_text,
                 evidence_json=[item.model_dump(mode="json") for item in result.evidence],
+                claim_category=result.claim_category.value,
+                risk_level=result.risk_level.value,
+                actionability=result.actionability.value,
+                has_official_sg_source=result.has_official_sg_source,
+                official_source_domain_count=result.official_source_domain_count,
                 source_quality_score=float(len(result.evidence)),
                 expires_at=expires_at,
             )
@@ -86,6 +91,11 @@ class ClaimCacheRepository:
             entry.reply_language = result.reply_language
             entry.reply_template = result.reply_text
             entry.evidence_json = [item.model_dump(mode="json") for item in result.evidence]
+            entry.claim_category = result.claim_category.value
+            entry.risk_level = result.risk_level.value
+            entry.actionability = result.actionability.value
+            entry.has_official_sg_source = result.has_official_sg_source
+            entry.official_source_domain_count = result.official_source_domain_count
             entry.source_quality_score = float(len(result.evidence))
             entry.expires_at = expires_at
             entry.last_used_at = datetime.now(UTC)

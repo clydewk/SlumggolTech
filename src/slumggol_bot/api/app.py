@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from collections.abc import AsyncIterator
 from datetime import datetime
 from functools import lru_cache
@@ -12,7 +13,12 @@ from slumggol_bot.config import AppSettings
 from slumggol_bot.db.models import ClaimCacheEntry
 from slumggol_bot.db.repositories import ClaimCacheRepository, GroupRepository, HotClaimRepository
 from slumggol_bot.db.session import create_session_factory
-from slumggol_bot.schemas import AnalysisMode, FactCheckResult
+from slumggol_bot.schemas import (
+    AnalysisMode,
+    ClaimCategory,
+    FactCheckResult,
+    RiskLevel,
+)
 from slumggol_bot.services.analytics import (
     ClickHouseAnalyticsQueryService,
     ClickHouseAnalyticsSink,
@@ -73,6 +79,19 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     session_factory = get_session_factory()
     async with session_factory() as session:
         yield session
+
+
+def require_admin_token(
+    authorization: str | None = Header(default=None, alias="Authorization"),  # noqa: B008
+) -> None:
+    expected = get_settings().admin_api_token
+    if not expected or not authorization:
+        raise HTTPException(status_code=401, detail="Missing admin token.")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid admin token.")
+    if not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="Invalid admin token.")
 
 
 def build_transport(settings: AppSettings | None = None) -> TelegramTransport:
@@ -171,6 +190,7 @@ async def ingest_telegram_webhook(
 async def set_analysis_mode(
     group_external_id: str,
     analysis_mode: str,
+    _: None = Depends(require_admin_token),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, str]:
     repository = GroupRepository(session)
@@ -188,6 +208,7 @@ async def set_analysis_mode(
 @app.post("/admin/groups/{group_external_id}/pause")
 async def pause_group(
     group_external_id: str,
+    _: None = Depends(require_admin_token),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, str | bool]:
     repository = GroupRepository(session)
@@ -199,6 +220,7 @@ async def pause_group(
 @app.post("/admin/groups/{group_external_id}/resume")
 async def resume_group(
     group_external_id: str,
+    _: None = Depends(require_admin_token),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, str | bool]:
     repository = GroupRepository(session)
@@ -208,13 +230,18 @@ async def resume_group(
 
 
 @app.get("/admin/groups/{group_external_id}/metrics")
-async def get_group_metrics(group_external_id: str, hours: int = 24) -> dict:
+async def get_group_metrics(
+    group_external_id: str,
+    hours: int = 24,
+    _: None = Depends(require_admin_token),  # noqa: B008
+) -> dict:
     metrics = await app.state.analytics_query_service.get_group_metrics(group_external_id, hours)
     return metrics.model_dump(mode="json")
 
 
 @app.post("/admin/outbreaks/refresh")
 async def refresh_outbreaks(
+    _: None = Depends(require_admin_token),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> dict[str, int]:
     settings = get_settings()
@@ -229,6 +256,51 @@ async def refresh_outbreaks(
     claims = await service.refresh_hot_claims()
     await session.commit()
     return {"refreshed": len(claims)}
+
+
+@app.get("/admin/dashboard/summary")
+async def get_dashboard_summary(
+    hours: int = 24,
+    _: None = Depends(require_admin_token),  # noqa: B008
+) -> dict:
+    summary = await app.state.analytics_query_service.get_dashboard_summary(hours)
+    return summary.model_dump(mode="json")
+
+
+@app.get("/admin/dashboard/trending-claims")
+async def get_trending_claims(
+    hours: int = 24,
+    min_group_count: int = 2,
+    limit: int = 20,
+    category: ClaimCategory | None = None,
+    risk_level: RiskLevel | None = None,
+    _: None = Depends(require_admin_token),  # noqa: B008
+) -> list[dict]:
+    return [
+        row.model_dump(mode="json")
+        for row in await app.state.analytics_query_service.list_trending_claims(
+            lookback_hours=hours,
+            min_group_count=min_group_count,
+            limit=limit,
+            category=category,
+            risk_level=risk_level,
+        )
+    ]
+
+
+@app.get("/admin/dashboard/claims/{claim_key}/groups")
+async def get_claim_group_spread(
+    claim_key: str,
+    hours: int = 24,
+    _: None = Depends(require_admin_token),  # noqa: B008
+) -> list[dict]:
+    return [
+        row.model_dump(mode="json")
+        for row in await app.state.analytics_query_service.list_claim_group_spread(
+            claim_key=claim_key,
+            lookback_hours=hours,
+        )
+    ]
 
 
 class GrouplessClaimCacheRepository:

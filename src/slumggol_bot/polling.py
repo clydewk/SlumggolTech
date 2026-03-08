@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,7 @@ from slumggol_bot.config import AppSettings
 from slumggol_bot.transport.base import TransportAdapter
 
 logger = logging.getLogger(__name__)
+
 
 class PollingTransport(TransportAdapter, Protocol):
     async def fetch_updates(
@@ -59,7 +60,10 @@ class TelegramPollingRunner[SessionT]:
         self.settings = settings
         self.session_factory = session_factory
         self.transport = transport
-        self.process_update = process_update or process_polled_update
+        self.process_update = process_update or cast(
+            ProcessUpdate[SessionT],
+            process_polled_update,
+        )
         self.sleep = sleep
 
     async def initialize(self) -> bool:

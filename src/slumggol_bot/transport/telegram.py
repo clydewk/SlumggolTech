@@ -187,6 +187,7 @@ class TelegramTransport:
     async def _normalize_message(self, message: dict[str, Any]) -> NormalizedMessage:
         chat = message.get("chat", {})
         group_id = str(chat.get("id", "unknown-group"))
+        group_display_name = chat.get("title") if isinstance(chat.get("title"), str) else None
         raw_message_id_value = message.get("message_id")
         raw_message_id = str(
             raw_message_id_value if raw_message_id_value is not None else "unknown"
@@ -246,6 +247,7 @@ class TelegramTransport:
         return NormalizedMessage(
             occurred_at=occurred_at,
             group_id=group_id,
+            group_display_name=group_display_name,
             message_id=message_id,
             transport_message_id=transport_message_id,
             sender_id=sender_id,

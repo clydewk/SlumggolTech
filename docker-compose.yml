@@ -147,7 +147,21 @@ services:
     volumes:
       - tunnel_state:/shared
 
+  metabase:
+    image: metabase/metabase:latest
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+      MB_SITE_URL: ${METABASE_SITE_URL:-http://localhost:3000}
+    ports:
+      - "${METABASE_PORT:-3000}:3000"
+    profiles:
+      - dashboard
+    restart: unless-stopped
+    volumes:
+      - metabase_data:/metabase-data
+
 volumes:
   postgres_data:
   redis_data:
   tunnel_state:
+  metabase_data:

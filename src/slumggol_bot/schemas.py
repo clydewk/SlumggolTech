@@ -31,6 +31,26 @@ class Verdict(StrEnum):
     NON_FACTUAL = "non_factual"
 
 
+class ClaimCategory(StrEnum):
+    SCAM = "scam"
+    PUBLIC_HEALTH = "public_health"
+    PUBLIC_SAFETY = "public_safety"
+    CIVIC = "civic"
+    OTHER = "other"
+
+
+class RiskLevel(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class Actionability(StrEnum):
+    MONITOR = "monitor"
+    COUNTERMESSAGE_READY = "countermessage_ready"
+    URGENT_REVIEW = "urgent_review"
+
+
 class GroupStyleProfile(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -49,6 +69,7 @@ class NormalizedMessage(BaseModel):
 
     occurred_at: datetime
     group_id: str
+    group_display_name: str | None = None
     message_id: str
     transport_message_id: int | None = None
     sender_id: str
@@ -156,6 +177,11 @@ class FactCheckResult(BaseModel):
     reply_versions: list[ReplyVersion] = Field(default_factory=list)  # NEW
     reason_codes: list[str] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list)
+    claim_category: ClaimCategory = ClaimCategory.OTHER
+    risk_level: RiskLevel = RiskLevel.LOW
+    actionability: Actionability = Actionability.MONITOR
+    has_official_sg_source: bool = False
+    official_source_domain_count: int = 0
     usage: ModelUsage = Field(default_factory=ModelUsage)
     cache_hit: bool = False
     cache_match_type: str | None = None
@@ -200,4 +226,42 @@ class GroupMetrics(BaseModel):
     hash_reuse_count: int = 0
     claim_spread_count: int = 0
     spend_usd: float = 0.0
+    reply_count: int = 0
+
+
+class DashboardSummary(BaseModel):
+    lookback_hours: int
+    candidate_message_count: int = 0
+    factcheck_count: int = 0
+    reply_count: int = 0
+    unique_groups: int = 0
+    trending_claim_count: int = 0
+    high_risk_claim_count: int = 0
+    spend_usd: float = 0.0
+
+
+class TrendingClaimRow(BaseModel):
+    claim_key: str
+    canonical_claim_en: str
+    claim_category: ClaimCategory = ClaimCategory.OTHER
+    risk_level: RiskLevel = RiskLevel.LOW
+    actionability: Actionability = Actionability.MONITOR
+    latest_verdict: Verdict | None = None
+    has_official_sg_source: bool = False
+    official_source_domain_count: int = 0
+    distinct_groups: int = 0
+    event_count: int = 0
+    reply_count: int = 0
+    max_confidence: float = 0.0
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+class ClaimGroupSpreadRow(BaseModel):
+    claim_key: str
+    group_id: str
+    group_display_name: str | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    event_count: int = 0
     reply_count: int = 0
